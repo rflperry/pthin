@@ -99,6 +99,46 @@ def _split_integrate(integrand, lo, hi, breakpoints, **quad_kwargs):
     return total
 
 
+def _integrand_and_breakpoints(theta, theta0, a, b, epsilon, density):
+    """Shared building block of ``R_theta`` and the conditional likelihood.
+
+    Returns the integrand ``g_theta(z) * nu_density(p_theta0(z))`` together
+    with the two ``z``-breakpoints where ``nu_density(p_theta0(z))`` is zero
+    (above ``z_qa``) or has a kink (at ``z_qb``); see ``_r_theta``.
+
+    Both ``g_theta`` and ``g_theta0`` are frozen once, outside the
+    integrand: re-freezing a scipy distribution (as ``_p_value`` does)
+    rebuilds its docstring every call, which dominates runtime by ~2 orders
+    of magnitude when the integrand is evaluated thousands of times across
+    the nested integrals ``pthin.estimate`` needs for the mean/median.
+    """
+    g_theta0 = _dist(theta0, density)
+    z_qa = g_theta0.isf(a ** (1 / epsilon))
+    z_qb = g_theta0.isf(b ** (1 / epsilon))
+    g_theta = _dist(theta, density)
+
+    def integrand(z):
+        q = g_theta0.sf(z)
+        return g_theta.pdf(z) * _nu_density(q, a, b, epsilon)
+
+    return integrand, z_qa, z_qb
+
+
+_QUAD_KWARGS = dict(epsabs=1e-12, epsrel=1e-9, limit=100)
+
+
+def _denominator(theta, theta0, a, b, epsilon, density):
+    """``int_{-inf}^{inf} g_theta(z) * nu_density(p_theta0(z)) dz``.
+
+    The (theta-dependent) normalizing constant shared by ``_r_theta`` and
+    ``_conditional_likelihood``.
+    """
+    integrand, z_qa, z_qb = _integrand_and_breakpoints(
+        theta, theta0, a, b, epsilon, density
+    )
+    return _split_integrate(integrand, -np.inf, z_qa, [z_qb], **_QUAD_KWARGS)
+
+
 def _r_theta(theta, t_obs, theta0, a, b, epsilon, density):
     """Evaluate ``R_theta(t)`` (the conditional CDF of the theorem) at ``theta``.
 
@@ -114,18 +154,28 @@ def _r_theta(theta, t_obs, theta0, a, b, epsilon, density):
     a**(1/epsilon)`` region) and has a kink at ``z_qb`` (where ``q =
     b**(1/epsilon)``), so both integrals are truncated/split there.
     """
-    z_qa = _p_value_inv(a ** (1 / epsilon), theta0, density)
-    z_qb = _p_value_inv(b ** (1 / epsilon), theta0, density)
-    g_theta = _dist(theta, density)
-
-    def integrand(z):
-        q = _p_value(z, theta0, density)
-        return g_theta.pdf(z) * _nu_density(q, a, b, epsilon)
-
-    quad_kwargs = dict(epsabs=1e-12, epsrel=1e-9, limit=100)
-    numerator = _split_integrate(integrand, t_obs, z_qa, [z_qb], **quad_kwargs)
-    denominator = _split_integrate(integrand, -np.inf, z_qa, [z_qb], **quad_kwargs)
+    integrand, z_qa, z_qb = _integrand_and_breakpoints(
+        theta, theta0, a, b, epsilon, density
+    )
+    numerator = _split_integrate(integrand, t_obs, z_qa, [z_qb], **_QUAD_KWARGS)
+    denominator = _split_integrate(integrand, -np.inf, z_qa, [z_qb], **_QUAD_KWARGS)
     return numerator / denominator
+
+
+def _conditional_likelihood(theta, t_obs, theta0, a, b, epsilon, density):
+    r"""Conditional likelihood ``r_theta(p_theta0(t))`` at the observed ``t_obs``.
+
+    This is the density (in ``t``) of ``T`` at the observed value, given
+    ``theta`` and conditional on the selection event ``p_theta0(T) in [a,
+    b]`` -- equivalently ``-d/dt R_theta(t)`` evaluated at ``t = t_obs``
+    (verified by finite differences against ``_r_theta``). As a function of
+    ``theta`` for fixed ``t_obs``, this is the conditional likelihood used
+    by the point estimators in :mod:`pthin.estimate`.
+    """
+    q_obs = _p_value(t_obs, theta0, density)
+    g_theta_t = _dist(theta, density).pdf(t_obs)
+    w_t = _nu_density(q_obs, a, b, epsilon)
+    return g_theta_t * w_t / _denominator(theta, theta0, a, b, epsilon, density)
 
 
 def _find_root(f, x0, target, search_radii=(5, 20, 60, 200)):

@@ -7,7 +7,7 @@ from scipy import stats
 from scipy.integrate import quad, trapezoid
 from scipy.optimize import minimize_scalar
 
-from pthin.inference import DensityFamily, _conditional_likelihood, _p_value, _p_value_inv
+from pthin.inference import DensityFamily, _conditional_likelihood, _p_value_inv
 
 __all__ = ["pcarve_estimate", "truncgauss_estimate"]
 
@@ -109,16 +109,22 @@ def pcarve_estimate(
     Parameters
     ----------
     stat : float
-        Either the p-value :math:`p_{\theta_0}(T)` (default, when
-        ``input_type="pvalue"``) or the raw test statistic :math:`T`
-        (when ``input_type="statistic"``).
+        Either the raw p-value :math:`p_{\theta_0}(T)` of the tested
+        statistic :math:`T` (default, when ``input_type="pvalue"``) or
+        :math:`T` itself (when ``input_type="statistic"``) -- this is *not*
+        the thinned p-value :math:`p_1(T)` used for selection below, which
+        this function never sees directly.
     theta0 : float
         Null value :math:`\theta_0` defining the upper-tailed p-value
         :math:`p_{\theta_0}(t) = 1 - G_{\theta_0}(t)`.
     a, b : float
         Endpoints of the selection interval: inference is conducted only
-        given :math:`p_{\theta_0}(T) \in [a, b]`. Must satisfy
-        ``0 < a < b < 1``.
+        given :math:`p_1(T) \in [a, b]`, where :math:`p_1` is the thinned
+        p-value from :func:`pthin.randomize.pthin`. Must satisfy ``0 <= a <
+        b < 1``. This event is the *caller's* responsibility to have
+        actually arranged; it is not, and cannot be, checked from ``stat``
+        alone (see :func:`pcarve_ci`). ``a=0`` uses a much faster code path
+        than ``a > 0`` -- see :func:`pthin.inference._r_theta_a0`.
     epsilon : float, default=0.5
         Thinning fraction used to construct the p-value used for selection,
         matching the ``epsilon`` of :func:`pthin.randomize.pthin`. Must lie
@@ -139,12 +145,11 @@ def pcarve_estimate(
     Raises
     ------
     ValueError
-        If ``a``, ``b``, or ``epsilon`` are out of range, if ``density``,
-        ``input_type``, or ``estimator`` is not recognized, or if the
-        observed p-value falls outside ``[a, b]``.
+        If ``a``, ``b``, or ``epsilon`` are out of range, or if
+        ``density``, ``input_type``, or ``estimator`` is not recognized.
     """
-    if not 0 < a < b < 1:
-        raise ValueError(f"Require 0 < a < b < 1, got a={a}, b={b}")
+    if not 0 <= a < b < 1:
+        raise ValueError(f"Require 0 <= a < b < 1, got a={a}, b={b}")
     if not 0 < epsilon < 1:
         raise ValueError(f"epsilon must lie in (0, 1), got {epsilon}")
     if density != "normal" and not callable(density):
@@ -156,21 +161,12 @@ def pcarve_estimate(
         raise ValueError(f"estimator must be one of {_ESTIMATORS}, got {estimator!r}")
 
     if input_type == "pvalue":
-        p_obs = float(stat)
-        t_obs = _p_value_inv(p_obs, theta0, density)
+        t_obs = _p_value_inv(float(stat), theta0, density)
     elif input_type == "statistic":
         t_obs = float(stat)
-        p_obs = _p_value(t_obs, theta0, density)
     else:
         raise ValueError(
             f"input_type must be 'pvalue' or 'statistic', got {input_type!r}"
-        )
-
-    if not a <= p_obs <= b:
-        raise ValueError(
-            f"Observed p-value {p_obs} lies outside the selection interval "
-            f"[{a}, {b}]; the conditional estimate is undefined off the "
-            "selection event."
         )
 
     if estimator == "mle":

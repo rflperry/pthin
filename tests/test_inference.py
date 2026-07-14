@@ -49,6 +49,74 @@ def test_ci_lower_below_upper():
     assert lo < hi
 
 
+# --- a=0 fast path (argmin-style selection: b is the runner-up's p-value) ---
+
+
+def _reference_calc_r_mu(mu, x_obs, c, epsilon):
+    # Independent re-derivation of the a=0 special case for arbitrary
+    # epsilon (not copy-pasted from experiments/normal_ci.ipynb, which
+    # hardcodes epsilon=0.5), used as ground truth for _r_theta's a=0 path.
+    z_jump = stats.norm.isf(c ** (1 / epsilon))
+    weight = (1 - epsilon) * c
+
+    def tail(z):
+        return weight * stats.norm.pdf(z - mu) * stats.norm.sf(z) ** (-epsilon)
+
+    lb, ub = mu - 20, min(z_jump, mu + 20)
+    den_lower = quad(tail, lb, ub)[0] if lb < ub else 0.0
+    den_upper = stats.norm.sf(z_jump - mu)
+    den = den_lower + den_upper
+
+    if x_obs < z_jump:
+        lb_num = max(x_obs, mu - 20)
+        num_lower = quad(tail, lb_num, ub)[0] if lb_num < ub else 0.0
+        num = num_lower + den_upper
+    else:
+        num = stats.norm.sf(x_obs - mu)
+    return num / den
+
+
+@pytest.mark.parametrize("epsilon", [0.3, 0.5, 0.7])
+def test_a0_fast_path_matches_independent_reference(epsilon):
+    x_obs, c, mu = 1.5, 0.3, 0.7
+    fast = _r_theta(mu, x_obs, theta0=0.0, a=0.0, b=c, epsilon=epsilon, density="normal")
+    reference = _reference_calc_r_mu(mu, x_obs, c, epsilon)
+    assert fast == pytest.approx(reference, abs=1e-6)
+
+
+@pytest.mark.parametrize("epsilon", [0.3, 0.5, 0.7])
+def test_a0_fast_path_matches_general_a_path_in_the_limit(epsilon):
+    x_obs, c, mu = 1.5, 0.3, 0.7
+    fast = _r_theta(mu, x_obs, theta0=0.0, a=0.0, b=c, epsilon=epsilon, density="normal")
+    general = _r_theta(mu, x_obs, theta0=0.0, a=1e-9, b=c, epsilon=epsilon, density="normal")
+    assert fast == pytest.approx(general, abs=1e-6)
+
+
+def test_pcarve_ci_allows_a_equals_zero():
+    lo, hi = pcarve_ci(
+        1.5, theta0=0.0, a=0.0, b=0.3, epsilon=0.5, alpha=0.05, input_type="statistic"
+    )
+    lo_ref, hi_ref = pcarve_ci(
+        1.5, theta0=0.0, a=1e-9, b=0.3, epsilon=0.5, alpha=0.05, input_type="statistic"
+    )
+    np.testing.assert_allclose([lo, hi], [lo_ref, hi_ref], atol=1e-4)
+
+
+def test_pcarve_ci_rejects_negative_a():
+    with pytest.raises(ValueError):
+        pcarve_ci(1.5, 0.0, a=-0.1, b=0.4, input_type="statistic")
+
+
+def test_pcarve_ci_custom_tolerance_is_close_to_default():
+    # Loose tolerances (as used for simulation-scale calls in
+    # experiments/normal_ci.ipynb) should still be reasonably accurate, just
+    # faster -- not exact to the same precision as the tight defaults.
+    kwargs = dict(theta0=0.0, a=0.0, b=0.3, epsilon=0.5, alpha=0.05, input_type="statistic")
+    lo_default, hi_default = pcarve_ci(1.5, **kwargs)
+    lo_loose, hi_loose = pcarve_ci(1.5, epsabs=1e-4, epsrel=1e-4, limit=50, **kwargs)
+    np.testing.assert_allclose([lo_loose, hi_loose], [lo_default, hi_default], atol=1e-3)
+
+
 def test_r_theta_is_increasing_in_theta():
     # R_theta(t) plays the role of a conditional CDF of theta given t, so it
     # must be monotonically increasing in theta for the interval inversion
@@ -127,9 +195,36 @@ def test_invalid_input_kind_raises():
         )
 
 
-def test_pvalue_outside_selection_interval_raises():
-    with pytest.raises(ValueError):
-        pcarve_ci(0.9, 0.0, a=0.05, b=0.4, input_type="pvalue")
+def test_raw_pvalue_outside_ab_does_not_raise():
+    # a, b describe the selection event on the *thinned* p-value p1(T), not
+    # on T's own raw p-value -- pcarve_ci never sees p1, so it can't and
+    # shouldn't validate against it. Regression test: this used to
+    # incorrectly raise, which (per test_argmin_selection_raw_pvalue_is_
+    # usually_outside_ab below) rejected the majority of legitimate calls
+    # in an argmin-style selection scenario.
+    pcarve_ci(0.9, 0.0, a=0.05, b=0.4, input_type="pvalue")
+
+
+def test_argmin_selection_raw_pvalue_is_usually_outside_ab():
+    # Empirical check backing the above: in the winner's-curse-style
+    # selection used by experiments/normal_ci.ipynb (sel = argmin(p1), b =
+    # runner-up's p1), the raw p-value of the selected statistic is outside
+    # [0, b] most of the time, even though the actual precondition p1(T)
+    # <= b holds by construction every time.
+    rng = np.random.default_rng(0)
+    n_outside = 0
+    n_reps = 500
+    for _ in range(n_reps):
+        x = rng.normal(0, 1, size=10)
+        p = stats.norm.sf(x)
+        z, c = rng.uniform(0, 1, size=10), rng.integers(0, 2, size=10)
+        p1 = np.sqrt(p) * (c + (1 - c) * z)
+        sel = np.argmin(p1)
+        b = np.sort(p1)[1]
+        p_raw = stats.norm.sf(x[sel])
+        if not (0 <= p_raw <= b):
+            n_outside += 1
+    assert n_outside > n_reps / 4
 
 
 @pytest.mark.parametrize(

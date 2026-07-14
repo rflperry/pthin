@@ -75,9 +75,11 @@ def test_invalid_input_kind_raises():
         )
 
 
-def test_pvalue_outside_selection_interval_raises():
-    with pytest.raises(ValueError):
-        pcarve_estimate(0.9, 0.0, a=0.05, b=0.4, input_type="pvalue")
+def test_raw_pvalue_outside_ab_does_not_raise():
+    # a, b describe the selection event on the thinned p-value p1(T), not
+    # on T's own raw p-value -- see the matching regression test in
+    # test_inference.py for why this must not raise.
+    pcarve_estimate(0.9, 0.0, a=0.05, b=0.4, input_type="pvalue")
 
 
 # --- truncgauss: conditional selective inference for T ~ N(theta, scale^2) | T > c ---

@@ -127,19 +127,78 @@ def _integrand_and_breakpoints(theta, theta0, a, b, epsilon, density):
 _QUAD_KWARGS = dict(epsabs=1e-12, epsrel=1e-9, limit=100)
 
 
-def _denominator(theta, theta0, a, b, epsilon, density):
+def _a0_tail_weight(q, epsilon, b):
+    r"""``a=0`` special case of ``nu_density`` for ``q > b**(1/epsilon)``.
+
+    When ``a=0``, ``nu_density(q, 0, b, epsilon)`` collapses to a constant
+    (``-1/b``, up to an overall scale -- see ``_r_theta_a0``) for ``q <=
+    b**(1/epsilon)`` and to ``-(1-epsilon) * q**(-epsilon)`` above it. This
+    is that second (tail) piece, rescaled by ``-b`` (a constant that cancels
+    in the ``R_theta``/``_conditional_likelihood`` ratio, matching the
+    convention used in ``experiments/normal_ci.ipynb``'s ``calc_r_mu``,
+    which this fast path reproduces): ``(1-epsilon) * b * q**(-epsilon)``.
+
+    ``epsilon=0.5`` is special-cased to ``1/sqrt(q)`` (a faster op than a
+    general non-half-integer ``**`` power) since it is the common case in
+    practice (:func:`pthin.randomize.pthin`'s default thinning fraction).
+    """
+    if epsilon == 0.5:
+        return 0.5 * b / np.sqrt(q)
+    return (1 - epsilon) * b * q ** (-epsilon)
+
+
+def _r_theta_a0(theta, t_obs, theta0, b, epsilon, density, quad_kwargs):
+    r"""``a=0`` fast path shared by ``_denominator`` and ``_r_theta``.
+
+    Mirrors ``experiments/normal_ci.ipynb``'s ``calc_r_mu`` (the ``a=0``,
+    ``epsilon=0.5`` closed-form special case this generalizes to arbitrary
+    ``epsilon``): with ``a=0``, the reference measure's density is constant
+    for ``q <= b**(1/epsilon)`` (i.e. ``z >= z_qb``) and a pure power law
+    above it, so the constant-density piece integrates in closed form
+    (``g_theta.sf``) and only the power-law piece needs ``quad`` -- instead
+    of the general ``0 < a`` case's up to two ``quad`` calls each for
+    numerator and denominator (see ``_integrand_and_breakpoints``).
+
+    Returns ``(numerator, denominator)``, i.e. ``R_theta(t_obs) =
+    numerator / denominator``.
+    """
+    g_theta0 = _dist(theta0, density)
+    z_qb = g_theta0.isf(b ** (1 / epsilon))
+    g_theta = _dist(theta, density)
+
+    def tail_integrand(z):
+        q = g_theta0.sf(z)
+        return g_theta.pdf(z) * _a0_tail_weight(q, epsilon, b)
+
+    def integral_from(lo):
+        constant_region = g_theta.sf(z_qb)
+        if lo >= z_qb:
+            return g_theta.sf(lo)
+        tail, _ = quad(tail_integrand, lo, z_qb, **quad_kwargs)
+        return tail + constant_region
+
+    return integral_from(t_obs), integral_from(-np.inf)
+
+
+def _denominator(theta, theta0, a, b, epsilon, density, quad_kwargs=None):
     """``int_{-inf}^{inf} g_theta(z) * nu_density(p_theta0(z)) dz``.
 
     The (theta-dependent) normalizing constant shared by ``_r_theta`` and
     ``_conditional_likelihood``.
     """
+    quad_kwargs = _QUAD_KWARGS if quad_kwargs is None else quad_kwargs
+    if a == 0:
+        _, denominator = _r_theta_a0(
+            theta, -np.inf, theta0, b, epsilon, density, quad_kwargs
+        )
+        return denominator
     integrand, z_qa, z_qb = _integrand_and_breakpoints(
         theta, theta0, a, b, epsilon, density
     )
-    return _split_integrate(integrand, -np.inf, z_qa, [z_qb], **_QUAD_KWARGS)
+    return _split_integrate(integrand, -np.inf, z_qa, [z_qb], **quad_kwargs)
 
 
-def _r_theta(theta, t_obs, theta0, a, b, epsilon, density):
+def _r_theta(theta, t_obs, theta0, a, b, epsilon, density, quad_kwargs=None):
     """Evaluate ``R_theta(t)`` (the conditional CDF of the theorem) at ``theta``.
 
     Integrated over the test-statistic scale ``z`` rather than the p-value
@@ -152,13 +211,21 @@ def _r_theta(theta, t_obs, theta0, a, b, epsilon, density):
 
     ``nu_density(p_theta0(z))`` is zero for ``z`` above ``z_qa`` (the ``q <
     a**(1/epsilon)`` region) and has a kink at ``z_qb`` (where ``q =
-    b**(1/epsilon)``), so both integrals are truncated/split there.
+    b**(1/epsilon)``), so both integrals are truncated/split there. When
+    ``a=0`` (``z_qa = +inf``), :func:`_r_theta_a0` computes the same ratio
+    much faster -- see its docstring.
     """
+    quad_kwargs = _QUAD_KWARGS if quad_kwargs is None else quad_kwargs
+    if a == 0:
+        numerator, denominator = _r_theta_a0(
+            theta, t_obs, theta0, b, epsilon, density, quad_kwargs
+        )
+        return numerator / denominator
     integrand, z_qa, z_qb = _integrand_and_breakpoints(
         theta, theta0, a, b, epsilon, density
     )
-    numerator = _split_integrate(integrand, t_obs, z_qa, [z_qb], **_QUAD_KWARGS)
-    denominator = _split_integrate(integrand, -np.inf, z_qa, [z_qb], **_QUAD_KWARGS)
+    numerator = _split_integrate(integrand, t_obs, z_qa, [z_qb], **quad_kwargs)
+    denominator = _split_integrate(integrand, -np.inf, z_qa, [z_qb], **quad_kwargs)
     return numerator / denominator
 
 
@@ -204,6 +271,9 @@ def pcarve_ci(
     alpha: float = 0.05,
     density: DensityFamily = "normal",
     input_type: str = "pvalue",
+    epsabs: float = 1e-12,
+    epsrel: float = 1e-9,
+    limit: int = 100,
 ) -> tuple[float, float]:
     r"""Conditional confidence interval for a location parameter after selection.
 
@@ -233,16 +303,25 @@ def pcarve_ci(
     Parameters
     ----------
     stat : float
-        Either the p-value :math:`p_{\theta_0}(T)` (default, when
-        ``input_type="pvalue"``) or the raw test statistic :math:`T`
-        (when ``input_type="statistic"``).
+        Either the raw p-value :math:`p_{\theta_0}(T)` of the tested
+        statistic :math:`T` (default, when ``input_type="pvalue"``) or
+        :math:`T` itself (when ``input_type="statistic"``) -- this is *not*
+        the thinned p-value :math:`p_1(T)` used for selection below, which
+        this function never sees directly.
     theta0 : float
         Null value :math:`\theta_0` defining the upper-tailed p-value
         :math:`p_{\theta_0}(t) = 1 - G_{\theta_0}(t)`.
     a, b : float
         Endpoints of the selection interval: inference is conducted only
-        given :math:`p_{\theta_0}(T) \in [a, b]`. Must satisfy
-        ``0 < a < b < 1``.
+        given :math:`p_1(T) \in [a, b]`, where :math:`p_1` is the thinned
+        p-value from :func:`pthin.randomize.pthin`. Must satisfy ``0 <= a <
+        b < 1``. This event is the *caller's* responsibility to have
+        actually arranged (e.g. by selecting on :math:`p_1 \le b`); it is
+        not, and cannot be, checked from ``stat`` alone, since :math:`p_1`
+        is an independent random quantity not derivable from :math:`T` or
+        its raw p-value. ``a=0`` (e.g. an "arg min :math:`p_1`" selection
+        rule, where ``b`` is the runner-up's :math:`p_1`) uses a much
+        faster code path than ``a > 0`` -- see :func:`_r_theta_a0`.
     epsilon : float, default=0.5
         Thinning fraction used to construct the p-value used for selection,
         matching the ``epsilon`` of :func:`pthin.randomize.pthin`. Must lie
@@ -262,6 +341,13 @@ def pcarve_ci(
     input_type : {"pvalue", "statistic"}, default="pvalue"
         Whether ``stat`` is the p-value :math:`p_{\theta_0}(T)` or the raw
         statistic :math:`T`.
+    epsabs, epsrel, limit : float, float, int
+        Tolerance/subdivision-count knobs passed to the underlying
+        ``scipy.integrate.quad`` calls. Defaults are tight enough for
+        general use; loosen them (e.g. ``epsabs=epsrel=1e-4``) for
+        simulation-scale usage where many calls are made and the added
+        numerical-integration error is acceptable relative to Monte Carlo
+        noise -- see ``experiments/normal_ci.ipynb``.
 
     Returns
     -------
@@ -273,13 +359,11 @@ def pcarve_ci(
     Raises
     ------
     ValueError
-        If ``a``, ``b``, ``epsilon``, or ``alpha`` are out of range, if
-        ``input_type`` is not recognized, or if the observed p-value falls
-        outside ``[a, b]`` (the conditional interval is only defined on the
-        selection event).
+        If ``a``, ``b``, ``epsilon``, or ``alpha`` are out of range, or if
+        ``input_type`` is not recognized.
     """
-    if not 0 < a < b < 1:
-        raise ValueError(f"Require 0 < a < b < 1, got a={a}, b={b}")
+    if not 0 <= a < b < 1:
+        raise ValueError(f"Require 0 <= a < b < 1, got a={a}, b={b}")
     if not 0 < epsilon < 1:
         raise ValueError(f"epsilon must lie in (0, 1), got {epsilon}")
     if not 0 < alpha < 1:
@@ -291,24 +375,18 @@ def pcarve_ci(
         )
 
     if input_type == "pvalue":
-        p_obs = float(stat)
-        t_obs = _p_value_inv(p_obs, theta0, density)
+        t_obs = _p_value_inv(float(stat), theta0, density)
     elif input_type == "statistic":
         t_obs = float(stat)
-        p_obs = _p_value(t_obs, theta0, density)
     else:
         raise ValueError(
             f"input_type must be 'pvalue' or 'statistic', got {input_type!r}"
         )
 
-    if not a <= p_obs <= b:
-        raise ValueError(
-            f"Observed p-value {p_obs} lies outside the selection interval "
-            f"[{a}, {b}]; the conditional interval is undefined off the "
-            "selection event."
-        )
-
-    r_of_theta = lambda theta: _r_theta(theta, t_obs, theta0, a, b, epsilon, density)
+    quad_kwargs = dict(epsabs=epsabs, epsrel=epsrel, limit=limit)
+    r_of_theta = lambda theta: _r_theta(
+        theta, t_obs, theta0, a, b, epsilon, density, quad_kwargs
+    )
 
     theta_lo = _find_root(r_of_theta, t_obs, alpha / 2)
     theta_hi = _find_root(r_of_theta, t_obs, 1 - alpha / 2)

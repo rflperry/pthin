@@ -6,6 +6,7 @@ from scipy.integrate import quad
 from scipy.optimize import brentq
 
 from pthin.inference import (
+    _conditional_likelihood,
     _nu_cdf,
     _nu_density,
     _r_theta,
@@ -90,6 +91,23 @@ def test_a0_fast_path_matches_general_a_path_in_the_limit(epsilon):
     fast = _r_theta(mu, x_obs, theta0=0.0, a=0.0, b=c, epsilon=epsilon, density="normal")
     general = _r_theta(mu, x_obs, theta0=0.0, a=1e-9, b=c, epsilon=epsilon, density="normal")
     assert fast == pytest.approx(general, abs=1e-6)
+
+
+@pytest.mark.parametrize("epsilon", [0.3, 0.5, 0.7])
+def test_conditional_likelihood_a0_fast_path_matches_general_path(epsilon):
+    # Regression test: _r_theta_a0 used to rescale its numerator/denominator
+    # by an overall constant relative to _nu_density's own raw scale. That
+    # cancels inside _r_theta's numerator/denominator ratio (so pcarve_ci
+    # stayed correct), but _conditional_likelihood combines a separately
+    # computed _nu_density value with _denominator's a=0 output directly,
+    # not as a same-path ratio -- the mismatched scale made it return
+    # negative "likelihoods" and threw pcarve_estimate's MLE/mean off by a
+    # large, wrong constant.
+    x_obs, theta, b = 2.126, 1.0, 0.1
+    fast = _conditional_likelihood(theta, x_obs, 0.0, 0.0, b, epsilon, "normal")
+    general = _conditional_likelihood(theta, x_obs, 0.0, 1e-9, b, epsilon, "normal")
+    assert fast >= 0
+    assert fast == pytest.approx(general, rel=1e-4)
 
 
 def test_pcarve_ci_allows_a_equals_zero():

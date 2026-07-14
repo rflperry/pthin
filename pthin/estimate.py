@@ -14,14 +14,18 @@ __all__ = ["pcarve_estimate", "truncgauss_estimate"]
 _ESTIMATORS = ("mle", "mean", "combined")
 
 
-def _log_likelihood(theta, t_obs, theta0, a, b, epsilon, density):
-    likelihood = _conditional_likelihood(theta, t_obs, theta0, a, b, epsilon, density)
+def _log_likelihood(theta, t_obs, theta0, a, b, epsilon, density, quad_kwargs):
+    likelihood = _conditional_likelihood(
+        theta, t_obs, theta0, a, b, epsilon, density, quad_kwargs
+    )
     return -np.inf if likelihood <= 0 else np.log(likelihood)
 
 
-def _mle(t_obs, theta0, a, b, epsilon, density, search_radii=(5, 20, 60, 200)):
+def _mle(t_obs, theta0, a, b, epsilon, density, quad_kwargs, search_radii=(5, 20, 60, 200)):
     """Maximize the conditional likelihood over theta via bracketed Brent search."""
-    objective = lambda theta: -_log_likelihood(theta, t_obs, theta0, a, b, epsilon, density)
+    objective = lambda theta: -_log_likelihood(
+        theta, t_obs, theta0, a, b, epsilon, density, quad_kwargs
+    )
     result = None
     for radius in search_radii:
         lo, hi = t_obs - radius, t_obs + radius
@@ -32,7 +36,7 @@ def _mle(t_obs, theta0, a, b, epsilon, density, search_radii=(5, 20, 60, 200)):
     return result.x
 
 
-def _mean(t_obs, theta0, a, b, epsilon, density, n_points=121):
+def _mean(t_obs, theta0, a, b, epsilon, density, quad_kwargs, n_points):
     """Conditional mean via trapezoidal quadrature over a grid in theta.
 
     Each grid point costs its own numerical integration (see
@@ -41,24 +45,19 @@ def _mean(t_obs, theta0, a, b, epsilon, density, n_points=121):
     independent adaptive-quadrature calls (numerator and normalizing
     constant) that would each rediscover where that mass lies from scratch.
     """
-    peak = _conditional_likelihood(t_obs, t_obs, theta0, a, b, epsilon, density)
+    likelihood_at = lambda theta: _conditional_likelihood(
+        theta, t_obs, theta0, a, b, epsilon, density, quad_kwargs
+    )
+    peak = likelihood_at(t_obs)
     radius = 4.0
     while radius <= 1e4:
-        edge = max(
-            _conditional_likelihood(t_obs - radius, t_obs, theta0, a, b, epsilon, density),
-            _conditional_likelihood(t_obs + radius, t_obs, theta0, a, b, epsilon, density),
-        )
+        edge = max(likelihood_at(t_obs - radius), likelihood_at(t_obs + radius))
         if edge < 1e-6 * max(peak, 1e-300):
             break
         radius *= 2
 
     thetas = np.linspace(t_obs - radius, t_obs + radius, n_points)
-    likelihoods = np.array(
-        [
-            _conditional_likelihood(theta, t_obs, theta0, a, b, epsilon, density)
-            for theta in thetas
-        ]
-    )
+    likelihoods = np.array([likelihood_at(theta) for theta in thetas])
     total = trapezoid(likelihoods, thetas)
     return trapezoid(thetas * likelihoods, thetas) / total
 
@@ -72,6 +71,10 @@ def pcarve_estimate(
     density: DensityFamily = "normal",
     input_type: str = "pvalue",
     estimator: str = "mle",
+    epsabs: float = 1e-12,
+    epsrel: float = 1e-9,
+    limit: int = 100,
+    n_points: int = 121,
 ) -> float:
     r"""Point estimate of a location parameter after selection.
 
@@ -136,6 +139,17 @@ def pcarve_estimate(
         statistic :math:`T`.
     estimator : {"mle", "mean", "combined"}, default="mle"
         Which point estimator to return.
+    epsabs, epsrel, limit : float, float, int
+        Tolerance/subdivision-count knobs passed to the underlying
+        ``scipy.integrate.quad`` calls, as in :func:`pcarve_ci`. Loosen
+        these (e.g. ``epsabs=epsrel=1e-4``) for simulation-scale usage --
+        ``"mean"`` in particular costs one such call *per grid point*
+        (~120 by default), so tight tolerances make it seconds-per-call
+        slow.
+    n_points : int, default=121
+        Grid resolution used by ``"mean"`` (see :func:`_mean`); irrelevant
+        for ``"mle"``. Reducing it (e.g. to 41) trades ``"mean"``/
+        ``"combined"`` accuracy for roughly proportionally less runtime.
 
     Returns
     -------
@@ -169,13 +183,14 @@ def pcarve_estimate(
             f"input_type must be 'pvalue' or 'statistic', got {input_type!r}"
         )
 
+    quad_kwargs = dict(epsabs=epsabs, epsrel=epsrel, limit=limit)
     if estimator == "mle":
-        return _mle(t_obs, theta0, a, b, epsilon, density)
+        return _mle(t_obs, theta0, a, b, epsilon, density, quad_kwargs)
     if estimator == "mean":
-        return _mean(t_obs, theta0, a, b, epsilon, density)
+        return _mean(t_obs, theta0, a, b, epsilon, density, quad_kwargs, n_points)
     return (
-        _mean(t_obs, theta0, a, b, epsilon, density)
-        + _mle(t_obs, theta0, a, b, epsilon, density)
+        _mean(t_obs, theta0, a, b, epsilon, density, quad_kwargs, n_points)
+        + _mle(t_obs, theta0, a, b, epsilon, density, quad_kwargs)
     ) / 2
 
 

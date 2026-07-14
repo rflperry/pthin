@@ -82,6 +82,25 @@ def test_raw_pvalue_outside_ab_does_not_raise():
     pcarve_estimate(0.9, 0.0, a=0.05, b=0.4, input_type="pvalue")
 
 
+def test_a0_mle_and_mean_are_pulled_below_t_obs_and_close_to_general_path():
+    # Regression test for the _r_theta_a0 scale-mismatch bug: with a=0 this
+    # used to return wildly wrong values (e.g. t_obs + 5, an artifact of
+    # the optimizer chasing a corrupted, sign-broken likelihood to a search
+    # bracket's edge) instead of a real winner's-curse correction.
+    theta0, t_obs, b = 0.0, 2.126, 0.1
+    for estimator in ["mle", "mean"]:
+        a0 = pcarve_estimate(
+            t_obs, theta0, a=0.0, b=b, estimator=estimator, input_type="statistic",
+            epsabs=1e-6, epsrel=1e-6,
+        )
+        general = pcarve_estimate(
+            t_obs, theta0, a=1e-9, b=b, estimator=estimator, input_type="statistic",
+            epsabs=1e-6, epsrel=1e-6,
+        )
+        assert a0 < t_obs
+        assert a0 == pytest.approx(general, abs=0.05)
+
+
 # --- truncgauss: conditional selective inference for T ~ N(theta, scale^2) | T > c ---
 
 

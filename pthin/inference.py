@@ -127,24 +127,21 @@ def _integrand_and_breakpoints(theta, theta0, a, b, epsilon, density):
 _QUAD_KWARGS = dict(epsabs=1e-12, epsrel=1e-9, limit=100)
 
 
-def _a0_tail_weight(q, epsilon, b):
+def _a0_tail_weight(q, epsilon):
     r"""``a=0`` special case of ``nu_density`` for ``q > b**(1/epsilon)``.
 
-    When ``a=0``, ``nu_density(q, 0, b, epsilon)`` collapses to a constant
-    (``-1/b``, up to an overall scale -- see ``_r_theta_a0``) for ``q <=
-    b**(1/epsilon)`` and to ``-(1-epsilon) * q**(-epsilon)`` above it. This
-    is that second (tail) piece, rescaled by ``-b`` (a constant that cancels
-    in the ``R_theta``/``_conditional_likelihood`` ratio, matching the
-    convention used in ``experiments/normal_ci.ipynb``'s ``calc_r_mu``,
-    which this fast path reproduces): ``(1-epsilon) * b * q**(-epsilon)``.
+    When ``a=0``, ``nu_density(q, 0, b, epsilon)`` collapses to the constant
+    ``-1/b`` for ``q <= b**(1/epsilon)`` and to ``-(1-epsilon) *
+    q**(-epsilon)`` above it (both on ``nu_density``'s own raw scale, not
+    rescaled by any constant): this is that second (tail) piece.
 
     ``epsilon=0.5`` is special-cased to ``1/sqrt(q)`` (a faster op than a
     general non-half-integer ``**`` power) since it is the common case in
     practice (:func:`pthin.randomize.pthin`'s default thinning fraction).
     """
     if epsilon == 0.5:
-        return 0.5 * b / np.sqrt(q)
-    return (1 - epsilon) * b * q ** (-epsilon)
+        return -0.5 / np.sqrt(q)
+    return -(1 - epsilon) * q ** (-epsilon)
 
 
 def _r_theta_a0(theta, t_obs, theta0, b, epsilon, density, quad_kwargs):
@@ -159,21 +156,32 @@ def _r_theta_a0(theta, t_obs, theta0, b, epsilon, density, quad_kwargs):
     of the general ``0 < a`` case's up to two ``quad`` calls each for
     numerator and denominator (see ``_integrand_and_breakpoints``).
 
+    Both pieces are kept on ``nu_density``'s own raw scale (no extra
+    constant folded in), matching ``_nu_density(q, 0, b, epsilon)``
+    exactly, since ``_conditional_likelihood`` combines this function's
+    output (via ``_denominator``) with a *separately* computed
+    ``_nu_density`` value (``w_t``) -- an earlier version rescaled by an
+    overall ``-b`` here (harmless for ``_r_theta``, which only ever uses
+    this as a numerator/denominator ratio where a common scale cancels, but
+    it silently broke ``_conditional_likelihood``, which does not take such
+    a ratio between two same-path calls and so does not cancel it).
+
     Returns ``(numerator, denominator)``, i.e. ``R_theta(t_obs) =
     numerator / denominator``.
     """
     g_theta0 = _dist(theta0, density)
     z_qb = g_theta0.isf(b ** (1 / epsilon))
     g_theta = _dist(theta, density)
+    constant_density = -1.0 / b
 
     def tail_integrand(z):
         q = g_theta0.sf(z)
-        return g_theta.pdf(z) * _a0_tail_weight(q, epsilon, b)
+        return g_theta.pdf(z) * _a0_tail_weight(q, epsilon)
 
     def integral_from(lo):
-        constant_region = g_theta.sf(z_qb)
+        constant_region = constant_density * g_theta.sf(z_qb)
         if lo >= z_qb:
-            return g_theta.sf(lo)
+            return constant_density * g_theta.sf(lo)
         tail, _ = quad(tail_integrand, lo, z_qb, **quad_kwargs)
         return tail + constant_region
 
@@ -229,7 +237,7 @@ def _r_theta(theta, t_obs, theta0, a, b, epsilon, density, quad_kwargs=None):
     return numerator / denominator
 
 
-def _conditional_likelihood(theta, t_obs, theta0, a, b, epsilon, density):
+def _conditional_likelihood(theta, t_obs, theta0, a, b, epsilon, density, quad_kwargs=None):
     r"""Conditional likelihood ``r_theta(p_theta0(t))`` at the observed ``t_obs``.
 
     This is the density (in ``t``) of ``T`` at the observed value, given
@@ -242,7 +250,8 @@ def _conditional_likelihood(theta, t_obs, theta0, a, b, epsilon, density):
     q_obs = _p_value(t_obs, theta0, density)
     g_theta_t = _dist(theta, density).pdf(t_obs)
     w_t = _nu_density(q_obs, a, b, epsilon)
-    return g_theta_t * w_t / _denominator(theta, theta0, a, b, epsilon, density)
+    denom = _denominator(theta, theta0, a, b, epsilon, density, quad_kwargs)
+    return g_theta_t * w_t / denom
 
 
 def _find_root(f, x0, target, search_radii=(5, 20, 60, 200)):

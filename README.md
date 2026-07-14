@@ -54,3 +54,20 @@ construction (`pcarve_ci`, `pcarve_threshold`, `pcarve_estimate`, in
 truncated-Gaussian conditional-selective-inference baseline
 (`truncgauss_pvalue`, `truncgauss_ci`, `truncgauss_estimate`) — see each
 function's docstring for details.
+
+
+## Data Access & Formatting
+
+To process the UK Biobank summary statistics, you must download the raw VCF files manually.
+
+1. **Download the Data**: Navigate to the following datasets and click **"VCF Download Links"** to download the compressed `.vcf.gz` files:
+   - **BMI:** [ukb-b-19953](https://opengwas.io/datasets/ukb-b-19953)
+   - **Height:** [ukb-b-10787](https://opengwas.io/datasets/ukb-b-10787)
+   - **Type 2 Diabetes:** [ebi-a-GCST006867](https://opengwas.io/datasets/ebi-a-GCST006867)
+
+2. **Stage the Files**: Place the three downloaded `.vcf.gz` files directly into the `data/` directory.
+
+3. **Format for Analysis**: Run the formatting script to parse the VCFs and extract the SNPs, $p$-values, and effect signs:
+   ```bash
+   python data/get_biobank_summaries.py
+    ```

@@ -1,17 +1,33 @@
-# pval-thinning
+# p-value Thinning
 
-Randomized thinning of p-values for independent post-selection inference.
+Inference after selection on randomized p-values.
 
 ## Installation
 
 ```bash
-pip install git+https://github.com/<your-org>/<your-repo>.git
+pip install git+https://github.com/rflperry/pthin.git
 ```
 
-Or, for local development with [uv](https://docs.astral.sh/uv/):
+## Development
+
+With [uv](https://docs.astral.sh/uv/) (recommended — uses the checked-in
+`uv.lock` for a reproducible environment):
 
 ```bash
-uv sync
+git clone https://github.com/rflperry/pthin.git
+cd pthin
+uv sync --group dev  # add --group notebooks too if you want to run experiments/*.ipynb
+uv run pytest  # run the test suite
+```
+
+Or with plain `pip`:
+
+```bash
+git clone https://github.com/rflperry/pthin.git
+cd pthin
+pip install -e .
+pip install --group dev  # add --group notebooks too if you want to run experiments/*.ipynb
+pytest
 ```
 
 ## Usage
@@ -31,8 +47,10 @@ select a hypothesis or threshold and the other for inference, without the
 double-dipping that would come from reusing `p` for both. See the
 [`pthin.randomize.pthin`](pthin/randomize.py) docstring for details.
 
-## Tests
-
-```bash
-uv run pytest
-```
+`pthin` also provides post-selection inference built on top of this
+construction (`pcarve_ci`, `pcarve_threshold`, `pcarve_estimate`, in
+[`pthin/inference.py`](pthin/inference.py) and
+[`pthin/estimate.py`](pthin/estimate.py)), plus the classic
+truncated-Gaussian conditional-selective-inference baseline
+(`truncgauss_pvalue`, `truncgauss_ci`, `truncgauss_estimate`) — see each
+function's docstring for details.

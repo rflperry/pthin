@@ -9,7 +9,7 @@ from scipy import stats
 from scipy.integrate import quad
 from scipy.optimize import brentq
 
-__all__ = ["conditional_ci", "conditional_threshold"]
+__all__ = ["pcarve_ci", "pcarve_threshold"]
 
 # `object` stands in for scipy's frozen-distribution type, which isn't
 # publicly exported under a stable name.
@@ -195,7 +195,7 @@ def _find_root(f, x0, target, search_radii=(5, 20, 60, 200)):
     )
 
 
-def conditional_ci(
+def pcarve_ci(
     stat: float,
     theta0: float,
     a: float,
@@ -316,7 +316,7 @@ def conditional_ci(
     return min(theta_lo, theta_hi), max(theta_lo, theta_hi)
 
 
-def conditional_threshold(
+def pcarve_threshold(
     alpha: float,
     a: float,
     b: float,

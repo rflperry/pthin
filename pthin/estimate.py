@@ -8,7 +8,7 @@ from scipy.optimize import minimize_scalar
 
 from pthin.inference import DensityFamily, _conditional_likelihood, _p_value, _p_value_inv
 
-__all__ = ["conditional_point_estimate"]
+__all__ = ["pcarve_estimate"]
 
 _ESTIMATORS = ("mle", "mean", "combined")
 
@@ -62,7 +62,7 @@ def _mean(t_obs, theta0, a, b, epsilon, density, n_points=121):
     return trapezoid(thetas * likelihoods, thetas) / total
 
 
-def conditional_point_estimate(
+def pcarve_estimate(
     stat: float,
     theta0: float,
     a: float,
@@ -77,7 +77,7 @@ def conditional_point_estimate(
     Following :cite:`ghosh_estimating_2008`, this estimates :math:`\theta^*`
     from the conditional likelihood :math:`r_\theta(p_{\theta_0}(t))`
     induced by the same conditional distribution as
-    :func:`conditional_ci`'s :math:`R_\theta(t)`:
+    :func:`pcarve_ci`'s :math:`R_\theta(t)`:
     :math:`r_\theta(p_{\theta_0}(t)) = -\frac{d}{dt} R_\theta(t) \big|_{t}`,
     the density (in :math:`t`) of :math:`T` at the observed value, given
     :math:`\theta` and conditional on the selection event
@@ -123,7 +123,7 @@ def conditional_point_estimate(
         matching the ``epsilon`` of :func:`pthin.randomize.pthin`. Must lie
         in ``(0, 1)``.
     density : "normal" or callable, default="normal"
-        The family :math:`\{g_\theta\}`, as in :func:`conditional_ci`.
+        The family :math:`\{g_\theta\}`, as in :func:`pcarve_ci`.
     input_type : {"pvalue", "statistic"}, default="pvalue"
         Whether ``stat`` is the p-value :math:`p_{\theta_0}(T)` or the raw
         statistic :math:`T`.

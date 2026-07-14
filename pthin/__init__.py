@@ -1,10 +1,10 @@
-from pthin.estimate import conditional_point_estimate
-from pthin.inference import conditional_ci, conditional_threshold
+from pthin.estimate import pcarve_estimate
+from pthin.inference import pcarve_ci, pcarve_threshold
 from pthin.randomize import pthin
 
 __all__ = [
     "pthin",
-    "conditional_ci",
-    "conditional_threshold",
-    "conditional_point_estimate",
+    "pcarve_ci",
+    "pcarve_threshold",
+    "pcarve_estimate",
 ]

@@ -9,7 +9,7 @@ from scipy import stats
 from scipy.integrate import quad
 from scipy.optimize import brentq
 
-__all__ = ["pcarve_ci", "pcarve_threshold"]
+__all__ = ["pcarve_ci", "pcarve_threshold", "truncgauss_pvalue", "truncgauss_ci"]
 
 # `object` stands in for scipy's frozen-distribution type, which isn't
 # publicly exported under a stable name.
@@ -376,3 +376,142 @@ def pcarve_threshold(
         xtol=1e-14,
         rtol=1e-14,
     )
+
+
+def _truncgauss_survival(theta, t, c, scale):
+    r"""``R^{TG}_theta(t) := Pr_theta(T >= t | T > c)`` for ``T ~ N(theta, scale**2)``.
+
+    A closed form (no numerical integration): the survival function of a
+    normal truncated to ``{T > c}``, evaluated in log-space for stability
+    (``sf(t - theta)`` and ``sf(c - theta)`` can each individually underflow
+    to 0 while their ratio stays well within range).
+    """
+    log_num = stats.norm.logsf(t, loc=theta, scale=scale)
+    log_den = stats.norm.logsf(c, loc=theta, scale=scale)
+    return np.exp(log_num - log_den)
+
+
+def truncgauss_pvalue(t_obs: float, theta0: float, c: float, scale: float = 1.0) -> float:
+    r"""Exact conditional p-value for a normal mean truncated to ``T > c``.
+
+    The classic conditional-selective-inference construction (e.g.
+    :cite:`lee_exact_2016`): given :math:`T \sim N(\theta_0, \text{scale}^2)`
+    under the null and conditioning on the selection event :math:`T > c`,
+
+    .. math::
+
+        p^{\mathrm{TG}} := \Pr_{\theta_0}(T \ge t \mid T > c)
+        = \frac{1 - \Phi((t - \theta_0)/\text{scale})}
+               {1 - \Phi((c - \theta_0)/\text{scale})}
+
+    is exactly (not merely boundedly) uniform on ``(0, 1)`` under the null,
+    conditional on ``T > c``, so rejecting :math:`H_0: \theta = \theta_0`
+    when :math:`p^{\mathrm{TG}} \le \alpha` controls the conditional
+    false-positive rate at exactly :math:`\alpha`. Contrast
+    :func:`pcarve_threshold`, whose bound is only exact when the selection
+    variable and the tested statistic coincide, as they do here.
+
+    Parameters
+    ----------
+    t_obs : float
+        Observed test statistic :math:`T`. Must satisfy ``t_obs >= c``
+        (the selection event).
+    theta0 : float
+        Null value :math:`\theta_0`.
+    c : float
+        Truncation/selection threshold: inference is conducted only given
+        :math:`T > c`.
+    scale : float, default=1.0
+        Standard deviation of :math:`T`.
+
+    Returns
+    -------
+    p_value : float
+        The exact conditional p-value :math:`p^{\mathrm{TG}} \in (0, 1)`.
+
+    Raises
+    ------
+    ValueError
+        If ``scale <= 0`` or ``t_obs < c``.
+    """
+    if scale <= 0:
+        raise ValueError(f"scale must be positive, got {scale}")
+    if t_obs < c:
+        raise ValueError(
+            f"Observed statistic {t_obs} lies below the selection threshold "
+            f"c={c}; the conditional p-value is undefined off the selection "
+            "event."
+        )
+    return _truncgauss_survival(theta0, t_obs, c, scale)
+
+
+def truncgauss_ci(
+    t_obs: float,
+    c: float,
+    alpha: float = 0.05,
+    scale: float = 1.0,
+) -> tuple[float, float]:
+    r"""Confidence interval for a normal mean truncated to ``T > c``.
+
+    The classic conditional-selective-inference CI (e.g.
+    :cite:`lee_exact_2016`): inverting :func:`truncgauss_pvalue`-style
+    tails at :math:`\alpha/2` and :math:`1 - \alpha/2` gives an interval
+    :math:`\mathrm{CI}^\alpha(T)` with *exact* conditional coverage,
+
+    .. math::
+
+        \Pr(\theta^* \in \mathrm{CI}^\alpha(T) \mid T > c) = 1 - \alpha,
+
+    since :math:`R^{TG}_\theta(t) := \Pr_\theta(T \ge t \mid T > c)` is
+    available in closed form (see :func:`_truncgauss_survival`) and,
+    exactly as :math:`R_\theta` in :func:`pcarve_ci`, is monotonically
+    increasing in :math:`\theta`; unlike :func:`pcarve_ci`, no numerical
+    integration is needed here, only the root-finding. Unlike
+    :func:`pcarve_ci`/:func:`truncgauss_pvalue`, no null value
+    :math:`\theta_0` is needed: a confidence interval doesn't test a
+    specific hypothesis, so there's nothing to condition the p-value
+    calculation on.
+
+    Parameters
+    ----------
+    t_obs : float
+        Observed test statistic :math:`T`. Must satisfy ``t_obs >= c``
+        (the selection event).
+    c : float
+        Truncation/selection threshold: inference is conducted only given
+        :math:`T > c`.
+    alpha : float, default=0.05
+        Target miscoverage level; the returned interval targets coverage
+        ``1 - alpha``.
+    scale : float, default=1.0
+        Standard deviation of :math:`T`.
+
+    Returns
+    -------
+    ci_lower : float
+        Lower endpoint of :math:`\mathrm{CI}^\alpha(T)`.
+    ci_upper : float
+        Upper endpoint of :math:`\mathrm{CI}^\alpha(T)`.
+
+    Raises
+    ------
+    ValueError
+        If ``scale <= 0``, ``alpha`` is out of ``(0, 1)``, or ``t_obs < c``.
+    """
+    if scale <= 0:
+        raise ValueError(f"scale must be positive, got {scale}")
+    if not 0 < alpha < 1:
+        raise ValueError(f"alpha must lie in (0, 1), got {alpha}")
+    if t_obs < c:
+        raise ValueError(
+            f"Observed statistic {t_obs} lies below the selection threshold "
+            f"c={c}; the conditional interval is undefined off the "
+            "selection event."
+        )
+
+    r_of_theta = lambda theta: _truncgauss_survival(theta, t_obs, c, scale)
+
+    theta_lo = _find_root(r_of_theta, t_obs, alpha / 2)
+    theta_hi = _find_root(r_of_theta, t_obs, 1 - alpha / 2)
+
+    return min(theta_lo, theta_hi), max(theta_lo, theta_hi)

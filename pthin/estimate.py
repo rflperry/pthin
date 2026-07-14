@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.integrate import trapezoid
+from scipy import stats
+from scipy.integrate import quad, trapezoid
 from scipy.optimize import minimize_scalar
 
 from pthin.inference import DensityFamily, _conditional_likelihood, _p_value, _p_value_inv
 
-__all__ = ["pcarve_estimate"]
+__all__ = ["pcarve_estimate", "truncgauss_estimate"]
 
 _ESTIMATORS = ("mle", "mean", "combined")
 
@@ -180,3 +181,123 @@ def pcarve_estimate(
         _mean(t_obs, theta0, a, b, epsilon, density)
         + _mle(t_obs, theta0, a, b, epsilon, density)
     ) / 2
+
+
+_TRUNCGAUSS_ESTIMATORS = ("mle", "mean")
+
+
+def _truncgauss_log_likelihood(theta, t_obs, c, scale):
+    return stats.norm.logpdf(t_obs, loc=theta, scale=scale) - stats.norm.logsf(
+        c, loc=theta, scale=scale
+    )
+
+
+def _truncgauss_mle(t_obs, c, scale, search_radii=(5, 20, 60, 200)):
+    """Maximize the truncated-normal conditional likelihood via bracketed Brent search.
+
+    Unlike ``_mle`` above, the (closed-form) likelihood here costs one
+    ``logpdf``/``logsf`` evaluation rather than its own numerical
+    integration, so this converges in a fraction of the time.
+    """
+    objective = lambda theta: -_truncgauss_log_likelihood(theta, t_obs, c, scale)
+    result = None
+    for radius in search_radii:
+        lo, hi = t_obs - radius, t_obs + radius
+        result = minimize_scalar(objective, bounds=(lo, hi), method="bounded")
+        at_boundary = min(result.x - lo, hi - result.x) < 1e-6 * radius
+        if not at_boundary:
+            return result.x
+    return result.x
+
+
+def _truncgauss_mean(t_obs, c, scale):
+    """Conditional mean via direct adaptive quadrature over theta.
+
+    Unlike ``_mean`` above, the likelihood here is closed-form (no nested
+    integration), so ordinary adaptive quadrature is cheap and accurate
+    enough directly -- no need for the grid-based workaround.
+    """
+    likelihood = lambda theta: np.exp(
+        _truncgauss_log_likelihood(theta, t_obs, c, scale)
+    )
+    total, _ = quad(likelihood, -np.inf, np.inf, limit=200)
+    numerator, _ = quad(lambda theta: theta * likelihood(theta), -np.inf, np.inf, limit=200)
+    return numerator / total
+
+
+def truncgauss_estimate(
+    t_obs: float,
+    c: float,
+    scale: float = 1.0,
+    estimator: str = "mle",
+) -> float:
+    r"""Point estimate of a normal mean truncated to ``T > c``.
+
+    The classic conditional-selective-inference point estimators (e.g.
+    :cite:`lee_exact_2016`, :cite:`ghosh_estimating_2008`), built from the
+    same conditional likelihood as :func:`truncgauss_ci`'s
+    :math:`R^{TG}_\theta(t)`: the density (in :math:`t`) of :math:`T` at
+    the observed value, given :math:`\theta` and conditional on :math:`T >
+    c`,
+
+    .. math::
+
+        r^{\mathrm{TG}}_\theta(t) := \frac{g_\theta(t)}{\Pr_\theta(T > c)}
+        = \frac{g_\theta(t)}{1 - \Phi((c - \theta)/\text{scale})}.
+
+    Two estimators are available via ``estimator``, matching
+    :func:`pcarve_estimate`'s ``"mle"``/``"mean"``:
+
+    - ``"mle"``: :math:`\hat\theta^{\mathrm{MLE}} := \arg\max_\theta
+      r^{\mathrm{TG}}_\theta(t)`.
+    - ``"mean"``: :math:`\hat\theta^{\mathrm{mean}} := \int_\Theta \theta\,
+      r^{\mathrm{TG}}_\theta(t) \, d\theta \big/ \int_\Theta
+      r^{\mathrm{TG}}_\theta(t) \, d\theta`.
+
+    Unlike :func:`pcarve_estimate`, no null value :math:`\theta_0` is
+    needed (estimation doesn't test a specific hypothesis), and
+    :math:`r^{\mathrm{TG}}_\theta` is closed-form rather than requiring its
+    own numerical integration per evaluation, so both estimators are exact
+    up to root-finding/quadrature tolerance rather than also being subject
+    to grid-resolution error.
+
+    Parameters
+    ----------
+    t_obs : float
+        Observed test statistic :math:`T`. Must satisfy ``t_obs >= c``
+        (the selection event).
+    c : float
+        Truncation/selection threshold: inference is conducted only given
+        :math:`T > c`.
+    scale : float, default=1.0
+        Standard deviation of :math:`T`.
+    estimator : {"mle", "mean"}, default="mle"
+        Which point estimator to return.
+
+    Returns
+    -------
+    theta_hat : float
+        The requested point estimate of :math:`\theta^*`.
+
+    Raises
+    ------
+    ValueError
+        If ``scale <= 0``, ``estimator`` is not recognized, or ``t_obs <
+        c``.
+    """
+    if scale <= 0:
+        raise ValueError(f"scale must be positive, got {scale}")
+    if estimator not in _TRUNCGAUSS_ESTIMATORS:
+        raise ValueError(
+            f"estimator must be one of {_TRUNCGAUSS_ESTIMATORS}, got {estimator!r}"
+        )
+    if t_obs < c:
+        raise ValueError(
+            f"Observed statistic {t_obs} lies below the selection threshold "
+            f"c={c}; the conditional estimate is undefined off the "
+            "selection event."
+        )
+
+    if estimator == "mle":
+        return _truncgauss_mle(t_obs, c, scale)
+    return _truncgauss_mean(t_obs, c, scale)

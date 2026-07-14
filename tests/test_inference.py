@@ -3,13 +3,17 @@ import pytest
 from scipy import stats
 
 from scipy.integrate import quad
+from scipy.optimize import brentq
 
 from pthin.inference import (
     _nu_cdf,
     _nu_density,
     _r_theta,
+    _truncgauss_survival,
     pcarve_ci,
     pcarve_threshold,
+    truncgauss_ci,
+    truncgauss_pvalue,
 )
 
 
@@ -180,3 +184,89 @@ def test_pcarve_threshold_invalid_selection_interval_raises():
 def test_pcarve_threshold_invalid_epsilon_raises():
     with pytest.raises(ValueError):
         pcarve_threshold(0.05, a=0.1, b=0.4, epsilon=1.5)
+
+
+# --- truncgauss: conditional selective inference for T ~ N(theta, scale^2) | T > c ---
+
+
+def _reference_truncgauss_survival(mu, t_obs, c):
+    # Independent re-derivation (not copy-pasted from pthin) matching
+    # experiments/normal_ci.ipynb's calc_r_cond_mu, used as ground truth.
+    log_num = stats.norm.logsf(t_obs - mu)
+    log_den = stats.norm.logsf(c - mu)
+    return np.exp(log_num - log_den)
+
+
+@pytest.mark.parametrize(
+    "t_obs,c,mu", [(1.5, 0.3, 0.0), (2.5, 1.0, 1.2), (0.8, 0.5, -0.3), (3.0, 2.9, 0.5)]
+)
+def test_truncgauss_survival_matches_reference(t_obs, c, mu):
+    assert _truncgauss_survival(mu, t_obs, c, 1.0) == pytest.approx(
+        _reference_truncgauss_survival(mu, t_obs, c), abs=1e-12
+    )
+
+
+def test_truncgauss_pvalue_matches_survival_at_theta0():
+    t_obs, theta0, c = 1.5, 0.0, 0.3
+    assert truncgauss_pvalue(t_obs, theta0, c) == pytest.approx(
+        _truncgauss_survival(theta0, t_obs, c, 1.0), abs=1e-12
+    )
+
+
+def test_truncgauss_pvalue_is_uniform_under_null():
+    rng = np.random.default_rng(0)
+    theta0, c = 0.0, 0.5
+    n = 200_000
+    truncated = stats.truncnorm.rvs(
+        a=c - theta0, b=np.inf, loc=theta0, scale=1.0, size=n, random_state=rng
+    )
+
+    p_values = stats.norm.sf(truncated, loc=theta0, scale=1.0) / stats.norm.sf(
+        c, loc=theta0, scale=1.0
+    )
+    assert stats.kstest(p_values, "uniform").pvalue > 0.001
+
+
+def test_truncgauss_survival_is_increasing_in_theta():
+    t_obs, c = 1.2, 0.3
+    thetas = np.linspace(-2, 2, 9)
+    values = [_truncgauss_survival(theta, t_obs, c, 1.0) for theta in thetas]
+    assert np.all(np.diff(values) > 0)
+
+
+def test_truncgauss_ci_matches_reference():
+    t_obs, c, alpha = 1.5, 0.3, 0.05
+
+    def f(mu, target):
+        return _reference_truncgauss_survival(mu, t_obs, c) - target
+
+    lo_ref = brentq(lambda mu: f(mu, alpha / 2), t_obs - 50, t_obs + 50)
+    hi_ref = brentq(lambda mu: f(mu, 1 - alpha / 2), t_obs - 50, t_obs + 50)
+
+    lo, hi = truncgauss_ci(t_obs, c, alpha=alpha)
+    assert (lo, hi) == pytest.approx((lo_ref, hi_ref), abs=1e-6)
+
+
+def test_truncgauss_ci_lower_below_upper():
+    lo, hi = truncgauss_ci(1.5, c=0.3, alpha=0.1)
+    assert lo < hi
+
+
+def test_truncgauss_ci_invalid_scale_raises():
+    with pytest.raises(ValueError):
+        truncgauss_ci(1.5, c=0.3, scale=-1.0)
+
+
+def test_truncgauss_ci_invalid_alpha_raises():
+    with pytest.raises(ValueError):
+        truncgauss_ci(1.5, c=0.3, alpha=1.5)
+
+
+def test_truncgauss_ci_below_threshold_raises():
+    with pytest.raises(ValueError):
+        truncgauss_ci(0.1, c=0.3)
+
+
+def test_truncgauss_pvalue_below_threshold_raises():
+    with pytest.raises(ValueError):
+        truncgauss_pvalue(0.1, theta0=0.0, c=0.3)

@@ -2,14 +2,22 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from pthin.inference import _r_theta, conditional_confidence_interval
+from scipy.integrate import quad
+
+from pthin.inference import (
+    _nu_cdf,
+    _nu_density,
+    _r_theta,
+    conditional_ci,
+    conditional_threshold,
+)
 
 
 def test_no_truncation_recovers_standard_normal_ci():
     # a -> 0, b -> 1 means "always conduct inference" (no conditioning), so
     # the conditional interval should collapse to the textbook z-interval.
     t_obs, theta0, alpha = 1.3, 0.0, 0.05
-    lo, hi = conditional_confidence_interval(
+    lo, hi = conditional_ci(
         t_obs, theta0, a=1e-9, b=1 - 1e-9, epsilon=0.5, alpha=alpha, input_type="statistic"
     )
     z = stats.norm.isf(alpha / 2)
@@ -21,17 +29,17 @@ def test_pvalue_and_statistic_inputs_agree():
     t_obs = 1.4
     p_obs = stats.norm.sf(t_obs, loc=theta0, scale=1.0)
 
-    lo_t, hi_t = conditional_confidence_interval(
+    lo_t, hi_t = conditional_ci(
         t_obs, theta0, a, b, epsilon=epsilon, alpha=alpha, input_type="statistic"
     )
-    lo_p, hi_p = conditional_confidence_interval(
+    lo_p, hi_p = conditional_ci(
         p_obs, theta0, a, b, epsilon=epsilon, alpha=alpha, input_type="pvalue"
     )
     np.testing.assert_allclose([lo_t, hi_t], [lo_p, hi_p], rtol=1e-6)
 
 
 def test_ci_lower_below_upper():
-    lo, hi = conditional_confidence_interval(
+    lo, hi = conditional_ci(
         1.4, theta0=0.0, a=0.05, b=0.4, epsilon=0.6, alpha=0.1, input_type="statistic"
     )
     assert lo < hi
@@ -51,10 +59,10 @@ def test_r_theta_is_increasing_in_theta():
 
 def test_custom_normal_callable_matches_builtin_normal_string():
     theta0, a, b, epsilon, alpha, t_obs = 0.0, 0.05, 0.4, 0.6, 0.1, 1.4
-    lo_builtin, hi_builtin = conditional_confidence_interval(
+    lo_builtin, hi_builtin = conditional_ci(
         t_obs, theta0, a, b, epsilon=epsilon, alpha=alpha, input_type="statistic"
     )
-    lo_custom, hi_custom = conditional_confidence_interval(
+    lo_custom, hi_custom = conditional_ci(
         t_obs,
         theta0,
         a,
@@ -84,37 +92,91 @@ def test_custom_density_r_theta_matches_analytic_reference():
 
 def test_invalid_density_raises():
     with pytest.raises(ValueError):
-        conditional_confidence_interval(
+        conditional_ci(
             1.0, 0.0, a=0.05, b=0.4, density=42, input_type="statistic"
         )
 
 
 def test_invalid_selection_interval_raises():
     with pytest.raises(ValueError):
-        conditional_confidence_interval(1.0, 0.0, a=0.5, b=0.4, input_type="statistic")
+        conditional_ci(1.0, 0.0, a=0.5, b=0.4, input_type="statistic")
 
 
 def test_invalid_epsilon_raises():
     with pytest.raises(ValueError):
-        conditional_confidence_interval(
+        conditional_ci(
             1.0, 0.0, a=0.05, b=0.4, epsilon=1.5, input_type="statistic"
         )
 
 
 def test_invalid_alpha_raises():
     with pytest.raises(ValueError):
-        conditional_confidence_interval(
+        conditional_ci(
             1.0, 0.0, a=0.05, b=0.4, alpha=1.5, input_type="statistic"
         )
 
 
 def test_invalid_input_kind_raises():
     with pytest.raises(ValueError):
-        conditional_confidence_interval(
+        conditional_ci(
             1.0, 0.0, a=0.05, b=0.4, input_type="not-a-real-option"
         )
 
 
 def test_pvalue_outside_selection_interval_raises():
     with pytest.raises(ValueError):
-        conditional_confidence_interval(0.9, 0.0, a=0.05, b=0.4, input_type="pvalue")
+        conditional_ci(0.9, 0.0, a=0.05, b=0.4, input_type="pvalue")
+
+
+@pytest.mark.parametrize(
+    "a,b,epsilon", [(0.1, 0.4, 0.5), (0.01, 0.9, 0.3), (0.2, 0.25, 0.7), (0.001, 0.5, 0.5)]
+)
+def test_nu_cdf_matches_numerical_integration(a, b, epsilon):
+    # _nu_cdf is a hand-derived closed-form antiderivative of -_nu_density
+    # (the (b-a)-normalized, sign-corrected version -- see _nu_cdf's
+    # docstring); check it against numerically integrating the density.
+    for t in [0.005, 0.05, 0.2, 0.5, 0.9, 1.0]:
+        numeric, _ = quad(lambda q: -_nu_density(q, a, b, epsilon), 0, t, limit=200)
+        assert _nu_cdf(t, a, b, epsilon) == pytest.approx(numeric, abs=1e-8)
+
+
+@pytest.mark.parametrize(
+    "a,b,epsilon", [(0.1, 0.4, 0.5), (0.01, 0.9, 0.3), (0.2, 0.25, 0.7), (0.001, 0.5, 0.5)]
+)
+def test_nu_cdf_is_a_valid_cdf(a, b, epsilon):
+    assert _nu_cdf(0.0, a, b, epsilon) == 0.0
+    assert _nu_cdf(1.0, a, b, epsilon) == pytest.approx(1.0, abs=1e-10)
+    ts = np.linspace(0, 1, 50)
+    values = [_nu_cdf(t, a, b, epsilon) for t in ts]
+    assert np.all(np.diff(values) >= 0)
+
+
+def test_conditional_threshold_inverts_nu_cdf():
+    alpha, a, b, epsilon = 0.05, 0.1, 0.4, 0.5
+    t_star = conditional_threshold(alpha, a, b, epsilon=epsilon)
+    assert _nu_cdf(t_star, a, b, epsilon) == pytest.approx(alpha, abs=1e-10)
+
+
+def test_conditional_threshold_increasing_in_alpha():
+    a, b, epsilon = 0.1, 0.4, 0.5
+    alphas = [0.01, 0.05, 0.1, 0.3, 0.5, 0.9]
+    thresholds = [
+        conditional_threshold(alpha, a, b, epsilon=epsilon)
+        for alpha in alphas
+    ]
+    assert np.all(np.diff(thresholds) > 0)
+
+
+def test_conditional_threshold_invalid_alpha_raises():
+    with pytest.raises(ValueError):
+        conditional_threshold(1.5, a=0.1, b=0.4)
+
+
+def test_conditional_threshold_invalid_selection_interval_raises():
+    with pytest.raises(ValueError):
+        conditional_threshold(0.05, a=0.5, b=0.4)
+
+
+def test_conditional_threshold_invalid_epsilon_raises():
+    with pytest.raises(ValueError):
+        conditional_threshold(0.05, a=0.1, b=0.4, epsilon=1.5)

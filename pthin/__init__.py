@@ -1,4 +1,8 @@
-from pthin.inference import conditional_confidence_interval
+from pthin.inference import conditional_ci, conditional_threshold
 from pthin.randomize import pthin
 
-__all__ = ["pthin", "conditional_confidence_interval"]
+__all__ = [
+    "pthin",
+    "conditional_ci",
+    "conditional_threshold",
+]

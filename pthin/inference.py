@@ -9,7 +9,7 @@ from scipy import stats
 from scipy.integrate import quad
 from scipy.optimize import brentq
 
-__all__ = ["conditional_confidence_interval"]
+__all__ = ["conditional_ci", "conditional_threshold"]
 
 # `object` stands in for scipy's frozen-distribution type, which isn't
 # publicly exported under a stable name.
@@ -49,6 +49,36 @@ def _nu_density(q, a, b, epsilon):
         q_pow = np.where(q > 0, q ** (-epsilon), np.inf)
         tail = np.minimum(1.0, b * q_pow) - np.minimum(1.0, a * q_pow)
     return epsilon / (a - b) * indicator + (1 - epsilon) / (a - b) * tail
+
+
+def _nu_cdf(t, a, b, epsilon):
+    r"""Closed form of ``N(t) = int_0^t d nu_{a,b}(q)``, the reference CDF.
+
+    This uses a ``1/(b - a)`` normalization rather than the ``1/(a - b)`` in
+    ``_nu_density``. In ``_r_theta``, ``_nu_density`` appears in both the
+    numerator and denominator of a ratio, so its sign is irrelevant there.
+    Used bare, as it is for the hypothesis-testing bound below, the ``(a -
+    b)`` convention (with ``a < b``, matching the ``p_1 in [a, b]``
+    selection interval elsewhere in this module) gives a *negative*,
+    decreasing function of ``t`` -- which cannot bound a probability, since
+    ``Pr(p <= t | ...) >= 0`` for every ``t``. The ``(b - a)`` convention
+    used here instead makes ``N`` non-negative, non-decreasing, and
+    satisfies ``N(1) = 1`` for every ``0 < a < b < 1`` and ``0 < epsilon <
+    1``, i.e. a genuine CDF on ``[0, 1]``.
+
+    Obtained by direct antiderivatives of ``_nu_density``'s three pieces
+    (zero below ``a**(1/epsilon)``, a linear-minus-power piece up to
+    ``b**(1/epsilon)``, then a pure power-law tail), verified against
+    numerical integration of ``-_nu_density`` to ~1e-12.
+    """
+    q_a = a ** (1 / epsilon)
+    q_b = b ** (1 / epsilon)
+    if t <= q_a:
+        return 0.0
+    if t <= q_b:
+        return (t - a * t ** (1 - epsilon)) / (b - a)
+    n_qb = (q_b - a * q_b ** (1 - epsilon)) / (b - a)
+    return n_qb + (t ** (1 - epsilon) - q_b ** (1 - epsilon))
 
 
 def _split_integrate(integrand, lo, hi, breakpoints, **quad_kwargs):
@@ -115,12 +145,11 @@ def _find_root(f, x0, target, search_radii=(5, 20, 60, 200)):
     )
 
 
-def conditional_confidence_interval(
+def conditional_ci(
     stat: float,
     theta0: float,
     a: float,
     b: float,
-    *,
     epsilon: float = 0.5,
     alpha: float = 0.05,
     density: DensityFamily = "normal",
@@ -235,3 +264,65 @@ def conditional_confidence_interval(
     theta_hi = _find_root(r_of_theta, t_obs, 1 - alpha / 2)
 
     return min(theta_lo, theta_hi), max(theta_lo, theta_hi)
+
+
+def conditional_threshold(
+    alpha: float,
+    a: float,
+    b: float,
+    epsilon: float = 0.5,
+) -> float:
+    r"""Rejection threshold for a p-value after selection on its thinned mask.
+
+    Implements the Lemma bounding the conditional false-positive rate of
+    testing the original p-value :math:`p` after selecting on the thinned
+    p-value :math:`p_1` (see :func:`pthin.randomize.pthin`) landing in
+    :math:`[a, b]`: for any :math:`t \in (0, 1)`,
+
+    .. math::
+
+        \Pr(p \le t \mid p_1 \in [a, b]) \le \int_0^t d\nu_{a,b}(q).
+
+    This function returns that
+    :math:`t^\star(\alpha)`: rejecting whenever :math:`p \le t^\star(\alpha)`
+    controls the conditional false-positive rate at level :math:`\alpha`,
+
+    .. math::
+
+        \Pr(p \le t^\star(\alpha) \mid p_1 \in [a, b]) \le \alpha.
+
+    Parameters
+    ----------
+    alpha : float
+        Target conditional false-positive rate. Must lie in ``(0, 1)``.
+    a, b : float
+        Endpoints of the selection interval: inference is conducted only
+        given :math:`p_1 \in [a, b]`. Must satisfy ``0 < a < b < 1``.
+    epsilon : float, default=0.5
+        Thinning fraction used to construct :math:`p_1`, matching the
+        ``epsilon`` of :func:`pthin.randomize.pthin`. Must lie in ``(0, 1)``.
+
+    Returns
+    -------
+    threshold : float
+        The rejection threshold :math:`t^\star(\alpha) \in (0, 1)`.
+
+    Raises
+    ------
+    ValueError
+        If ``alpha``, ``a``, ``b``, or ``epsilon`` are out of range.
+    """
+    if not 0 < alpha < 1:
+        raise ValueError(f"alpha must lie in (0, 1), got {alpha}")
+    if not 0 < a < b < 1:
+        raise ValueError(f"Require 0 < a < b < 1, got a={a}, b={b}")
+    if not 0 < epsilon < 1:
+        raise ValueError(f"epsilon must lie in (0, 1), got {epsilon}")
+
+    return brentq(
+        lambda t: _nu_cdf(t, a, b, epsilon) - alpha,
+        0.0,
+        1.0,
+        xtol=1e-14,
+        rtol=1e-14,
+    )

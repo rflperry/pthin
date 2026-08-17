@@ -9,5 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
+# Project specific
+Claude.md
+
 # Old
 .bak/

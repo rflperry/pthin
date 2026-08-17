@@ -9,7 +9,14 @@ from scipy import stats
 from scipy.integrate import quad
 from scipy.optimize import brentq
 
-__all__ = ["pcarve_ci", "pcarve_threshold", "truncgauss_pvalue", "truncgauss_ci"]
+__all__ = [
+    "pcarve_ci",
+    "pcarve_threshold",
+    "truncgauss_pvalue",
+    "truncgauss_ci",
+    "normal_carving_pvalue",
+    "normal_carving_ci",
+]
 
 # `object` stands in for scipy's frozen-distribution type, which isn't
 # publicly exported under a stable name.
@@ -602,3 +609,169 @@ def truncgauss_ci(
     theta_hi = _find_root(r_of_theta, t_obs, 1 - alpha / 2)
 
     return min(theta_lo, theta_hi), max(theta_lo, theta_hi)
+
+
+def _normal_carving_survival(mu, x, c, sigma_x, sigma_y, rho):
+    r"""``Pr_mu(X >= x | Y < c)`` for bivariate normal ``(X, Y)`` sharing mean ``mu``.
+
+    Standardizing ``xi = (x - mu)/sigma_x``, ``gamma = (c - mu)/sigma_y``
+    leaves the correlation ``rho`` between them unchanged (rescaling each
+    coordinate on its own doesn't touch their correlation), so
+    ``Pr(X <= x, Y < c) = Phi_2(xi, gamma; rho)``, the bivariate standard
+    normal CDF, and ``Pr(Y < c) = Phi(gamma)``. The survival function
+    follows by ``1 - Pr(X <= x | Y < c) = 1 - Phi_2(xi, gamma; rho)/Phi(gamma)``.
+    """
+    xi = (x - mu) / sigma_x
+    gamma = (c - mu) / sigma_y
+    phi_gamma = stats.norm.cdf(gamma)
+    phi2 = stats.multivariate_normal(
+        mean=[0.0, 0.0], cov=[[1.0, rho], [rho, 1.0]]
+    ).cdf([xi, gamma])
+    return (phi_gamma - phi2) / phi_gamma
+
+
+def normal_carving_pvalue(
+    x_obs: float,
+    mu0: float,
+    c: float,
+    sigma_x: float = 1.0,
+    sigma_y: float = 1.0,
+    rho: float = 0.0,
+) -> float:
+    r"""Exact conditional p-value for data carving with correlated bivariate normal data.
+
+    Given :math:`(X, Y) \sim N\left(\binom{\mu}{\mu}, \begin{psmallmatrix}
+    \sigma_X^2 & \rho\sigma_X\sigma_Y \\ \rho\sigma_X\sigma_Y & \sigma_Y^2
+    \end{psmallmatrix}\right)` -- a *shared* mean :math:`\mu`, known
+    variances/correlation -- and the decision to conduct inference only on
+    the selection event :math:`Y < c`, the exact conditional p-value for
+    testing :math:`H_0: \mu = \mu_0` from the observed :math:`X = x` is
+
+    .. math::
+
+        p^{\mathrm{NC}} := \Pr_{\mu_0}(X \ge x \mid Y < c)
+        = 1 - \frac{\Phi_2\!\left(\frac{x-\mu_0}{\sigma_X},
+        \frac{c-\mu_0}{\sigma_Y}; \rho\right)}{\Phi\!\left(\frac{c-\mu_0}{\sigma_Y}\right)},
+
+    where :math:`\Phi_2(\cdot,\cdot;\rho)` is the standard bivariate normal
+    CDF with correlation :math:`\rho`. This is exactly uniform on ``(0,
+    1)`` under the null, conditional on :math:`Y < c` (verified by
+    simulation), generalizing :func:`truncgauss_pvalue` (:math:`Y = X`,
+    i.e. :math:`\rho = 1` and :math:`\sigma_X = \sigma_Y`, recovers a
+    mirrored/lower-tail version of it) and ordinary (unconditional)
+    inference on :math:`X` (:math:`\rho = 0`, since then :math:`X \perp Y`
+    and selection carries no information about :math:`X`) as special
+    cases, in the spirit of Fithian, Sun & Taylor (2014) "data carving".
+    Unlike :func:`pcarve_threshold`/:func:`pcarve_ci`, no thinning or
+    universal bound is involved: the selection variable :math:`Y` and the
+    tested variable :math:`X` are simply allowed to be any two correlated
+    normals sharing the parameter of interest, rather than :math:`p_1(T)`
+    and :math:`T` derived from the same statistic via :func:`pthin.randomize.pthin`.
+
+    Parameters
+    ----------
+    x_obs : float
+        Observed value of :math:`X`.
+    mu0 : float
+        Null value :math:`\mu_0` for the shared mean.
+    c : float
+        Selection threshold: inference is conducted only given :math:`Y <
+        c`.
+    sigma_x, sigma_y : float, default=1.0
+        Standard deviations of :math:`X` and :math:`Y`.
+    rho : float, default=0.0
+        Correlation between :math:`X` and :math:`Y`. Must lie in ``(-1,
+        1)`` (a non-degenerate bivariate normal).
+
+    Returns
+    -------
+    p_value : float
+        The exact conditional p-value :math:`p^{\mathrm{NC}} \in (0, 1)`.
+
+    Raises
+    ------
+    ValueError
+        If ``sigma_x`` or ``sigma_y`` is not positive, or ``rho`` is not in
+        ``(-1, 1)``.
+    """
+    if sigma_x <= 0 or sigma_y <= 0:
+        raise ValueError(
+            f"sigma_x and sigma_y must be positive, got sigma_x={sigma_x}, "
+            f"sigma_y={sigma_y}"
+        )
+    if not -1 < rho < 1:
+        raise ValueError(f"rho must lie in (-1, 1), got {rho}")
+
+    return _normal_carving_survival(mu0, x_obs, c, sigma_x, sigma_y, rho)
+
+
+def normal_carving_ci(
+    x_obs: float,
+    c: float,
+    alpha: float = 0.05,
+    sigma_x: float = 1.0,
+    sigma_y: float = 1.0,
+    rho: float = 0.0,
+) -> tuple[float, float]:
+    r"""Confidence interval for data carving with correlated bivariate normal data.
+
+    Inverting :func:`normal_carving_pvalue`-style tails at :math:`\alpha/2`
+    and :math:`1 - \alpha/2` gives an interval :math:`\mathrm{CI}^\alpha(X)`
+    with exact conditional coverage,
+
+    .. math::
+
+        \Pr(\mu^* \in \mathrm{CI}^\alpha(X) \mid Y < c) = 1 - \alpha,
+
+    since :math:`R^{\mathrm{NC}}_\mu(x) := \Pr_\mu(X \ge x \mid Y < c)`
+    (see :func:`_normal_carving_survival`) is available in closed form and
+    monotonically increasing in :math:`\mu` (verified numerically), exactly
+    as :func:`truncgauss_ci`'s :math:`R^{TG}_\theta`. As in
+    :func:`truncgauss_ci`, no null value :math:`\mu_0` is needed here: a
+    confidence interval doesn't test a specific hypothesis.
+
+    Parameters
+    ----------
+    x_obs : float
+        Observed value of :math:`X`.
+    c : float
+        Selection threshold: inference is conducted only given :math:`Y <
+        c`.
+    alpha : float, default=0.05
+        Target miscoverage level; the returned interval targets coverage
+        ``1 - alpha``.
+    sigma_x, sigma_y : float, default=1.0
+        Standard deviations of :math:`X` and :math:`Y`.
+    rho : float, default=0.0
+        Correlation between :math:`X` and :math:`Y`. Must lie in ``(-1,
+        1)`` (a non-degenerate bivariate normal).
+
+    Returns
+    -------
+    ci_lower : float
+        Lower endpoint of :math:`\mathrm{CI}^\alpha(X)`.
+    ci_upper : float
+        Upper endpoint of :math:`\mathrm{CI}^\alpha(X)`.
+
+    Raises
+    ------
+    ValueError
+        If ``sigma_x``/``sigma_y`` is not positive, ``rho`` is not in
+        ``(-1, 1)``, or ``alpha`` is out of ``(0, 1)``.
+    """
+    if sigma_x <= 0 or sigma_y <= 0:
+        raise ValueError(
+            f"sigma_x and sigma_y must be positive, got sigma_x={sigma_x}, "
+            f"sigma_y={sigma_y}"
+        )
+    if not -1 < rho < 1:
+        raise ValueError(f"rho must lie in (-1, 1), got {rho}")
+    if not 0 < alpha < 1:
+        raise ValueError(f"alpha must lie in (0, 1), got {alpha}")
+
+    r_of_mu = lambda mu: _normal_carving_survival(mu, x_obs, c, sigma_x, sigma_y, rho)
+
+    mu_lo = _find_root(r_of_mu, x_obs, alpha / 2)
+    mu_hi = _find_root(r_of_mu, x_obs, 1 - alpha / 2)
+
+    return min(mu_lo, mu_hi), max(mu_lo, mu_hi)

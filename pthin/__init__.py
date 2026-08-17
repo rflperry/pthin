@@ -1,5 +1,12 @@
 from pthin.estimate import pcarve_estimate, truncgauss_estimate
-from pthin.inference import pcarve_ci, pcarve_threshold, truncgauss_ci, truncgauss_pvalue
+from pthin.inference import (
+    normal_carving_ci,
+    normal_carving_pvalue,
+    pcarve_ci,
+    pcarve_threshold,
+    truncgauss_ci,
+    truncgauss_pvalue,
+)
 from pthin.randomize import pthin
 
 __all__ = [
@@ -10,4 +17,6 @@ __all__ = [
     "truncgauss_pvalue",
     "truncgauss_ci",
     "truncgauss_estimate",
+    "normal_carving_pvalue",
+    "normal_carving_ci",
 ]

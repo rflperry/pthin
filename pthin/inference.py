@@ -659,19 +659,13 @@ def normal_carving_pvalue(
 
     where :math:`\Phi_2(\cdot,\cdot;\rho)` is the standard bivariate normal
     CDF with correlation :math:`\rho`. This is exactly uniform on ``(0,
-    1)`` under the null, conditional on :math:`Y > c` (verified by
-    simulation), generalizing :func:`truncgauss_pvalue` (:math:`Y = X`,
+    1)`` under the null, conditional on :math:`Y > c`,
+    generalizing :func:`truncgauss_pvalue` (:math:`Y = X`,
     i.e. :math:`\rho = 1` and :math:`\sigma_X = \sigma_Y`, recovers it
     exactly) and ordinary (unconditional) inference on :math:`X`
     (:math:`\rho = 0`, since then :math:`X \perp Y` and selection carries
     no information about :math:`X`) as special cases, in the spirit of
-    Fithian, Sun & Taylor (2014) "data carving". Unlike
-    :func:`pcarve_threshold`/:func:`pcarve_ci`, no thinning or universal
-    bound is involved: the selection variable :math:`Y` and the tested
-    variable :math:`X` are simply allowed to be any two correlated normals
-    sharing the parameter of interest, rather than :math:`p_1(T)` and
-    :math:`T` derived from the same statistic via
-    :func:`pthin.randomize.pthin`.
+    Fithian, Sun & Taylor (2014) "data carving".
 
     Parameters
     ----------

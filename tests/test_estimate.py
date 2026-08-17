@@ -101,6 +101,61 @@ def test_a0_mle_and_mean_are_pulled_below_t_obs_and_close_to_general_path():
         assert a0 == pytest.approx(general, abs=0.05)
 
 
+# --- theta_min/theta_max: bounded parameter domains (e.g. reflection-symmetric families) ---
+
+
+def test_theta_bound_mean_matches_mle_ballpark_for_symmetric_family():
+    # Regression test: with theta_min=0 against a reflection-symmetric
+    # family (g_theta = g_{-theta}), _mean's radius-expansion used to treat
+    # hitting the theta_min boundary as "not yet decayed" (since the
+    # density right at theta=0 need not be small), so it kept expanding the
+    # search radius all the way to the 1e4 cap -- producing a grid so wide
+    # relative to n_points that the integral came out as exactly 0 (or
+    # NaN), rather than a real magnitude estimate near the MLE.
+    density = lambda theta: stats.foldnorm(c=theta, loc=0, scale=1)
+    x_obs, b = 3.0, 0.05
+
+    mle = pcarve_estimate(
+        x_obs, 0.0, a=0.0, b=b, density=density, estimator="mle",
+        input_type="statistic", epsabs=1e-6, epsrel=1e-6, theta_min=0.0,
+    )
+    mean = pcarve_estimate(
+        x_obs, 0.0, a=0.0, b=b, density=density, estimator="mean",
+        input_type="statistic", epsabs=1e-6, epsrel=1e-6, n_points=81, theta_min=0.0,
+    )
+    assert mle > 0
+    assert mean > 0
+    assert mean == pytest.approx(mle, abs=1.0)
+
+
+def test_theta_min_zero_gives_nonnegative_estimates():
+    density = lambda theta: stats.foldnorm(c=theta, loc=0, scale=1)
+    for x_obs in [0.5, 1.5, 3.0, 5.0]:
+        for estimator in ["mle", "mean", "combined"]:
+            value = pcarve_estimate(
+                x_obs, 0.0, a=0.0, b=0.05, density=density, estimator=estimator,
+                input_type="statistic", epsabs=1e-6, epsrel=1e-6, n_points=61,
+                theta_min=0.0,
+            )
+            assert value >= 0
+
+
+def test_theta_bounds_no_truncation_recovers_t_obs_for_symmetric_family():
+    # Same closed-form sanity check as the unconstrained no-truncation
+    # test, but for a reflection-symmetric family with theta_min=0: with no
+    # conditioning, the conditional likelihood is just g_theta(t_obs)
+    # again, whose mode/mean (restricted to theta>=0) sit at theta=t_obs
+    # for t_obs comfortably away from the theta_min boundary.
+    density = lambda theta: stats.foldnorm(c=theta, loc=0, scale=1)
+    x_obs = 3.0
+    for estimator in ["mle", "mean"]:
+        value = pcarve_estimate(
+            x_obs, 0.0, a=1e-9, b=1 - 1e-9, density=density, estimator=estimator,
+            input_type="statistic", theta_min=0.0,
+        )
+        assert value == pytest.approx(x_obs, abs=1e-2)
+
+
 # --- truncgauss: conditional selective inference for T ~ N(theta, scale^2) | T > c ---
 
 

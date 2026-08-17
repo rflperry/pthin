@@ -21,22 +21,38 @@ def _log_likelihood(theta, t_obs, theta0, a, b, epsilon, density, quad_kwargs):
     return -np.inf if likelihood <= 0 else np.log(likelihood)
 
 
-def _mle(t_obs, theta0, a, b, epsilon, density, quad_kwargs, search_radii=(5, 20, 60, 200)):
-    """Maximize the conditional likelihood over theta via bracketed Brent search."""
+def _mle(
+    t_obs, theta0, a, b, epsilon, density, quad_kwargs,
+    search_radii=(5, 20, 60, 200), theta_min=-np.inf, theta_max=np.inf,
+):
+    """Maximize the conditional likelihood over theta via bracketed Brent search.
+
+    ``theta_min``/``theta_max`` constrain the search (e.g. ``theta_min=0``
+    for a magnitude parameter under a reflection-symmetric family, where
+    ``theta`` is otherwise only identifiable up to sign). A result sitting
+    at one of these hard domain bounds is accepted immediately rather than
+    triggering a wider-bracket retry, since expanding the search radius
+    can't move it off a genuine constraint boundary.
+    """
     objective = lambda theta: -_log_likelihood(
         theta, t_obs, theta0, a, b, epsilon, density, quad_kwargs
     )
     result = None
     for radius in search_radii:
-        lo, hi = t_obs - radius, t_obs + radius
+        lo = max(theta_min, t_obs - radius)
+        hi = min(theta_max, t_obs + radius)
         result = minimize_scalar(objective, bounds=(lo, hi), method="bounded")
-        at_boundary = min(result.x - lo, hi - result.x) < 1e-6 * radius
-        if not at_boundary:
+        stuck_at_lo = abs(result.x - lo) < 1e-6 * radius and lo > theta_min
+        stuck_at_hi = abs(result.x - hi) < 1e-6 * radius and hi < theta_max
+        if not (stuck_at_lo or stuck_at_hi):
             return result.x
     return result.x
 
 
-def _mean(t_obs, theta0, a, b, epsilon, density, quad_kwargs, n_points):
+def _mean(
+    t_obs, theta0, a, b, epsilon, density, quad_kwargs, n_points,
+    theta_min=-np.inf, theta_max=np.inf,
+):
     """Conditional mean via trapezoidal quadrature over a grid in theta.
 
     Each grid point costs its own numerical integration (see
@@ -44,19 +60,33 @@ def _mean(t_obs, theta0, a, b, epsilon, density, quad_kwargs, n_points):
     single shared grid spanning most of its mass rather than driving two
     independent adaptive-quadrature calls (numerator and normalizing
     constant) that would each rediscover where that mass lies from scratch.
+
+    ``theta_min``/``theta_max`` constrain the grid to a bounded parameter
+    domain -- see ``_mle``.
     """
     likelihood_at = lambda theta: _conditional_likelihood(
         theta, t_obs, theta0, a, b, epsilon, density, quad_kwargs
     )
-    peak = likelihood_at(t_obs)
+    center = min(max(t_obs, theta_min), theta_max)
+    peak = likelihood_at(center)
+    tiny = 1e-6 * max(peak, 1e-300)
     radius = 4.0
     while radius <= 1e4:
-        edge = max(likelihood_at(t_obs - radius), likelihood_at(t_obs + radius))
-        if edge < 1e-6 * max(peak, 1e-300):
+        lo = max(theta_min, center - radius)
+        hi = min(theta_max, center + radius)
+        # A side pinned at a hard theta_min/theta_max boundary is "done"
+        # regardless of the density there (nowhere further to expand into);
+        # only an *unclamped* side still needs to show density decay before
+        # the grid is wide enough to capture (near enough) all the mass.
+        lo_done = lo <= theta_min or likelihood_at(lo) < tiny
+        hi_done = hi >= theta_max or likelihood_at(hi) < tiny
+        if lo_done and hi_done:
             break
         radius *= 2
 
-    thetas = np.linspace(t_obs - radius, t_obs + radius, n_points)
+    lo = max(theta_min, center - radius)
+    hi = min(theta_max, center + radius)
+    thetas = np.linspace(lo, hi, n_points)
     likelihoods = np.array([likelihood_at(theta) for theta in thetas])
     total = trapezoid(likelihoods, thetas)
     return trapezoid(thetas * likelihoods, thetas) / total
@@ -75,6 +105,8 @@ def pcarve_estimate(
     epsrel: float = 1e-9,
     limit: int = 100,
     n_points: int = 121,
+    theta_min: float = -np.inf,
+    theta_max: float = np.inf,
 ) -> float:
     r"""Point estimate of a location parameter after selection.
 
@@ -150,6 +182,15 @@ def pcarve_estimate(
         Grid resolution used by ``"mean"`` (see :func:`_mean`); irrelevant
         for ``"mle"``. Reducing it (e.g. to 41) trades ``"mean"``/
         ``"combined"`` accuracy for roughly proportionally less runtime.
+    theta_min, theta_max : float, default=-inf, inf
+        Bounds constraining the search/integration domain for ``theta``.
+        Useful when ``theta`` is only identifiable up to some symmetry of
+        ``density`` (e.g. a reflection-symmetric family like
+        ``scipy.stats.foldnorm``, where :math:`g_\theta = g_{-\theta}`) and
+        you want a magnitude estimate specifically: without a bound,
+        ``"mean"`` would integrate a ``theta``-symmetric likelihood over a
+        ``theta``-symmetric domain and collapse toward 0, and ``"mle"``
+        would return an arbitrary sign.
 
     Returns
     -------
@@ -184,13 +225,17 @@ def pcarve_estimate(
         )
 
     quad_kwargs = dict(epsabs=epsabs, epsrel=epsrel, limit=limit)
+    mle_kwargs = dict(theta_min=theta_min, theta_max=theta_max)
+    mean_kwargs = dict(theta_min=theta_min, theta_max=theta_max)
     if estimator == "mle":
-        return _mle(t_obs, theta0, a, b, epsilon, density, quad_kwargs)
+        return _mle(t_obs, theta0, a, b, epsilon, density, quad_kwargs, **mle_kwargs)
     if estimator == "mean":
-        return _mean(t_obs, theta0, a, b, epsilon, density, quad_kwargs, n_points)
+        return _mean(
+            t_obs, theta0, a, b, epsilon, density, quad_kwargs, n_points, **mean_kwargs
+        )
     return (
-        _mean(t_obs, theta0, a, b, epsilon, density, quad_kwargs, n_points)
-        + _mle(t_obs, theta0, a, b, epsilon, density, quad_kwargs)
+        _mean(t_obs, theta0, a, b, epsilon, density, quad_kwargs, n_points, **mean_kwargs)
+        + _mle(t_obs, theta0, a, b, epsilon, density, quad_kwargs, **mle_kwargs)
     ) / 2
 
 

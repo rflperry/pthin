@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from pthin.estimate import pcarve_estimate, truncgauss_estimate
+from pthin.estimate import normal_carving_estimate, pcarve_estimate, truncgauss_estimate
 
 
 def test_no_truncation_all_estimators_recover_t_obs():
@@ -208,3 +208,63 @@ def test_truncgauss_invalid_estimator_raises():
 def test_truncgauss_below_threshold_raises():
     with pytest.raises(ValueError):
         truncgauss_estimate(0.1, c=0.3)
+
+
+# --- normal_carving: data carving for bivariate normal (X, Y) sharing a mean, ---
+# --- selecting on Y > c and estimating mu from X                             ---
+
+
+def test_normal_carving_rho_zero_recovers_x_obs():
+    # rho=0 means X is independent of the selection variable Y, so
+    # conditioning on Y > c carries no information about X: both
+    # estimators reduce to the ordinary (unconditional) MLE/mean of a
+    # single normal observation, x_obs itself.
+    x_obs, c, sigma_x, sigma_y = 1.7, -2.0, 1.1, 0.8
+    for estimator in ["mle", "mean"]:
+        value = normal_carving_estimate(
+            x_obs, c, sigma_x, sigma_y, rho=0.0, estimator=estimator
+        )
+        assert value == pytest.approx(x_obs, abs=1e-4)
+
+
+def test_normal_carving_rho_one_matches_truncgauss_estimate():
+    # rho->1 with sigma_x=sigma_y means X and Y coincide, so conditioning
+    # on Y > c is the same as conditioning on X > c directly -- exactly
+    # truncgauss's construction.
+    x_obs, c, sigma = 2.5, 2.0, 1.3
+    for estimator in ["mle", "mean"]:
+        nc = normal_carving_estimate(
+            x_obs, c, sigma, sigma, rho=1.0 - 1e-9, estimator=estimator
+        )
+        tg = truncgauss_estimate(x_obs, c, scale=sigma, estimator=estimator)
+        assert nc == pytest.approx(tg, abs=1e-4)
+
+
+def test_normal_carving_estimate_pulled_below_x_obs_under_positive_correlation():
+    # Positive rho makes Y > c informative about X, biasing the naive
+    # x_obs upward (winner's-curse-style); the conditional estimators
+    # should correct downward from it.
+    x_obs, c, rho = 1.5, 0.5, 0.6
+    mle = normal_carving_estimate(x_obs, c, rho=rho, estimator="mle")
+    mean = normal_carving_estimate(x_obs, c, rho=rho, estimator="mean")
+    assert mle < x_obs
+    assert mean < x_obs
+
+
+def test_normal_carving_estimate_invalid_sigma_raises():
+    with pytest.raises(ValueError):
+        normal_carving_estimate(1.0, c=0.5, sigma_x=-1.0)
+    with pytest.raises(ValueError):
+        normal_carving_estimate(1.0, c=0.5, sigma_y=0.0)
+
+
+def test_normal_carving_estimate_invalid_rho_raises():
+    with pytest.raises(ValueError):
+        normal_carving_estimate(1.0, c=0.5, rho=1.0)
+    with pytest.raises(ValueError):
+        normal_carving_estimate(1.0, c=0.5, rho=-1.5)
+
+
+def test_normal_carving_estimate_invalid_estimator_raises():
+    with pytest.raises(ValueError):
+        normal_carving_estimate(1.0, c=0.5, estimator="bogus")

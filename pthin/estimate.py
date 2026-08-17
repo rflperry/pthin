@@ -9,7 +9,7 @@ from scipy.optimize import minimize_scalar
 
 from pthin.inference import DensityFamily, _conditional_likelihood, _p_value_inv
 
-__all__ = ["pcarve_estimate", "truncgauss_estimate"]
+__all__ = ["pcarve_estimate", "truncgauss_estimate", "normal_carving_estimate"]
 
 _ESTIMATORS = ("mle", "mean", "combined")
 
@@ -357,3 +357,144 @@ def truncgauss_estimate(
     if estimator == "mle":
         return _truncgauss_mle(t_obs, c, scale)
     return _truncgauss_mean(t_obs, c, scale)
+
+
+_NORMAL_CARVING_ESTIMATORS = ("mle", "mean")
+
+
+def _normal_carving_log_likelihood(mu, x_obs, c, sigma_x, sigma_y, rho):
+    r"""``log r^{NC}_mu(x_obs) := log Pr_mu(X = x_obs, Y > c) - log Pr_mu(Y > c)``.
+
+    ``Y | X = x_obs ~ N(mu + rho*(sigma_y/sigma_x)*(x_obs - mu), sigma_y**2*(1
+    - rho**2))`` (the usual bivariate-normal conditional), so the numerator
+    factors as ``g_X(x_obs) * Pr(Y > c | X = x_obs)``. Verified by finite
+    differences against ``-d/dx Pr_mu(X >= x | Y > c)``
+    (:func:`pthin.inference._normal_carving_survival`) at ``x = x_obs``, to
+    ~1e-12.
+    """
+    cond_mean = mu + rho * (sigma_y / sigma_x) * (x_obs - mu)
+    cond_std = sigma_y * np.sqrt(1 - rho**2)
+    log_num = stats.norm.logpdf(x_obs, loc=mu, scale=sigma_x) + stats.norm.logsf(
+        c, loc=cond_mean, scale=cond_std
+    )
+    log_den = stats.norm.logsf(c, loc=mu, scale=sigma_y)
+    return log_num - log_den
+
+
+def _normal_carving_mle(x_obs, c, sigma_x, sigma_y, rho, search_radii=(5, 20, 60, 200)):
+    """Maximize the data-carving conditional likelihood via bracketed Brent search.
+
+    Mirrors ``_truncgauss_mle``: the (closed-form) likelihood here costs one
+    ``logpdf``/``logsf`` pair rather than its own numerical integration.
+    """
+    objective = lambda mu: -_normal_carving_log_likelihood(
+        mu, x_obs, c, sigma_x, sigma_y, rho
+    )
+    result = None
+    for radius in search_radii:
+        lo, hi = x_obs - radius, x_obs + radius
+        result = minimize_scalar(objective, bounds=(lo, hi), method="bounded")
+        at_boundary = min(result.x - lo, hi - result.x) < 1e-6 * radius
+        if not at_boundary:
+            return result.x
+    return result.x
+
+
+def _normal_carving_mean(x_obs, c, sigma_x, sigma_y, rho):
+    """Conditional mean via direct adaptive quadrature over mu.
+
+    Mirrors ``_truncgauss_mean``: the likelihood here is closed-form (no
+    nested integration), so ordinary adaptive quadrature is cheap and
+    accurate enough directly.
+    """
+    likelihood = lambda mu: np.exp(
+        _normal_carving_log_likelihood(mu, x_obs, c, sigma_x, sigma_y, rho)
+    )
+    total, _ = quad(likelihood, -np.inf, np.inf, limit=200)
+    numerator, _ = quad(lambda mu: mu * likelihood(mu), -np.inf, np.inf, limit=200)
+    return numerator / total
+
+
+def normal_carving_estimate(
+    x_obs: float,
+    c: float,
+    sigma_x: float = 1.0,
+    sigma_y: float = 1.0,
+    rho: float = 0.0,
+    estimator: str = "mle",
+) -> float:
+    r"""Point estimate of a shared mean after data carving with bivariate normal data.
+
+    Given :math:`(X, Y) \sim N\left(\binom{\mu}{\mu}, \begin{psmallmatrix}
+    \sigma_X^2 & \rho\sigma_X\sigma_Y \\ \rho\sigma_X\sigma_Y & \sigma_Y^2
+    \end{psmallmatrix}\right)` and the decision to conduct inference only on
+    the selection event :math:`Y > c`, the conditional likelihood of
+    :math:`\mu` given the observed :math:`X = x_{\mathrm{obs}}` is
+
+    .. math::
+
+        r^{\mathrm{NC}}_\mu(x_{\mathrm{obs}})
+        := \frac{g_\mu(x_{\mathrm{obs}}) \cdot
+        \Pr_\mu(Y > c \mid X = x_{\mathrm{obs}})}{\Pr_\mu(Y > c)},
+
+    matching :func:`normal_carving_pvalue`/:func:`normal_carving_ci`'s
+    :math:`R^{\mathrm{NC}}_\mu(x) := \Pr_\mu(X \ge x \mid Y > c)` via
+    :math:`r^{\mathrm{NC}}_\mu(x) = -\frac{d}{dx} R^{\mathrm{NC}}_\mu(x)`
+    (verified numerically). Two estimators are available via ``estimator``,
+    matching :func:`truncgauss_estimate`:
+
+    - ``"mle"``: :math:`\hat\mu^{\mathrm{MLE}} := \arg\max_\mu
+      r^{\mathrm{NC}}_\mu(x_{\mathrm{obs}})`.
+    - ``"mean"``: :math:`\hat\mu^{\mathrm{mean}} := \int \mu\,
+      r^{\mathrm{NC}}_\mu(x_{\mathrm{obs}}) \, d\mu \big/ \int
+      r^{\mathrm{NC}}_\mu(x_{\mathrm{obs}}) \, d\mu`.
+
+    As in :func:`truncgauss_estimate`, :math:`r^{\mathrm{NC}}_\mu` is
+    closed-form (the conditional density of a bivariate normal), so both
+    estimators are exact up to root-finding/quadrature tolerance, with no
+    grid-resolution error. Setting :math:`\rho = 0` recovers the ordinary
+    (unconditional) sample-mean-style MLE :math:`\hat\mu = x_{\mathrm{obs}}`
+    (selection carries no information about :math:`X`); :math:`\rho \to 1`
+    with :math:`\sigma_X = \sigma_Y` recovers :func:`truncgauss_estimate`.
+
+    Parameters
+    ----------
+    x_obs : float
+        Observed value of :math:`X`.
+    c : float
+        Selection threshold: inference is conducted only given :math:`Y >
+        c`.
+    sigma_x, sigma_y : float, default=1.0
+        Standard deviations of :math:`X` and :math:`Y`.
+    rho : float, default=0.0
+        Correlation between :math:`X` and :math:`Y`. Must lie in ``(-1,
+        1)`` (a non-degenerate bivariate normal).
+    estimator : {"mle", "mean"}, default="mle"
+        Which point estimator to return.
+
+    Returns
+    -------
+    mu_hat : float
+        The requested point estimate of :math:`\mu^*`.
+
+    Raises
+    ------
+    ValueError
+        If ``sigma_x``/``sigma_y`` is not positive, ``rho`` is not in
+        ``(-1, 1)``, or ``estimator`` is not recognized.
+    """
+    if sigma_x <= 0 or sigma_y <= 0:
+        raise ValueError(
+            f"sigma_x and sigma_y must be positive, got sigma_x={sigma_x}, "
+            f"sigma_y={sigma_y}"
+        )
+    if not -1 < rho < 1:
+        raise ValueError(f"rho must lie in (-1, 1), got {rho}")
+    if estimator not in _NORMAL_CARVING_ESTIMATORS:
+        raise ValueError(
+            f"estimator must be one of {_NORMAL_CARVING_ESTIMATORS}, got {estimator!r}"
+        )
+
+    if estimator == "mle":
+        return _normal_carving_mle(x_obs, c, sigma_x, sigma_y, rho)
+    return _normal_carving_mean(x_obs, c, sigma_x, sigma_y, rho)

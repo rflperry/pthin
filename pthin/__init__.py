@@ -1,4 +1,4 @@
-from pthin.estimate import pcarve_estimate, truncgauss_estimate
+from pthin.estimate import normal_carving_estimate, pcarve_estimate, truncgauss_estimate
 from pthin.inference import (
     normal_carving_ci,
     normal_carving_pvalue,
@@ -19,4 +19,5 @@ __all__ = [
     "truncgauss_estimate",
     "normal_carving_pvalue",
     "normal_carving_ci",
+    "normal_carving_estimate",
 ]

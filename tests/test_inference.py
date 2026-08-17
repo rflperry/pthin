@@ -389,12 +389,12 @@ def test_truncgauss_pvalue_below_threshold_raises():
 
 
 # --- normal_carving: data carving for bivariate normal (X, Y) sharing a mean, ---
-# --- selecting on Y < c and testing/inferring mu from X                     ---
+# --- selecting on Y > c and testing/inferring mu from X                     ---
 
 
 def test_normal_carving_rho_zero_matches_ordinary_z_test():
     # rho=0 means X is independent of the selection variable Y, so
-    # conditioning on Y < c carries no information about X: the p-value
+    # conditioning on Y > c carries no information about X: the p-value
     # should reduce exactly to the ordinary (unconditional) one-sample
     # upper-tailed z-test.
     x_obs, mu0, c, sigma_x, sigma_y = 2.0, 0.5, -1.0, 1.2, 0.8
@@ -403,29 +403,27 @@ def test_normal_carving_rho_zero_matches_ordinary_z_test():
     assert p == pytest.approx(reference, abs=1e-8)
 
 
-def test_normal_carving_rho_one_matches_mirrored_truncgauss():
+def test_normal_carving_rho_one_matches_truncgauss():
     # rho->1 with sigma_x=sigma_y means X and Y coincide, so conditioning on
-    # Y < c is the same as conditioning on X < c directly -- a mirrored
-    # (lower-tail-selection) version of truncgauss's construction. Only
-    # valid to compare where x_obs < c (otherwise X=Y<c is contradicted).
+    # Y > c is the same as conditioning on X > c directly -- exactly
+    # truncgauss's construction. Only valid to compare where x_obs >= c
+    # (otherwise X=Y>c is contradicted).
     mu0, c, sigma = 0.5, 2.0, 1.3
-    for x_obs in [-0.5, 0.5, 1.5, 1.9]:
+    for x_obs in [2.1, 2.5, 3.5, 3.9]:
         p = normal_carving_pvalue(x_obs, mu0, c, sigma, sigma, rho=1.0 - 1e-9)
-        reference = 1 - stats.norm.cdf((x_obs - mu0) / sigma) / stats.norm.cdf(
-            (c - mu0) / sigma
-        )
+        reference = truncgauss_pvalue(x_obs, mu0, c, scale=sigma)
         assert p == pytest.approx(reference, abs=1e-6)
 
 
 def test_normal_carving_pvalue_is_uniform_under_the_null():
-    # Under mu0 equal to the true shared mean, conditional on Y < c, the
+    # Under mu0 equal to the true shared mean, conditional on Y > c, the
     # p-value of X should be exactly Uniform(0, 1).
-    mu_true, sigma_x, sigma_y, rho, c = 0.3, 1.1, 0.9, 0.6, -0.2
+    mu_true, sigma_x, sigma_y, rho, c = 0.3, 1.1, 0.9, 0.6, 0.2
     cov = [[sigma_x**2, rho * sigma_x * sigma_y], [rho * sigma_x * sigma_y, sigma_y**2]]
     rng = np.random.default_rng(0)
     samples = rng.multivariate_normal([mu_true, mu_true], cov, size=200_000)
     X, Y = samples[:, 0], samples[:, 1]
-    x_selected = X[Y < c]
+    x_selected = X[Y > c]
 
     pvals = np.array(
         [
@@ -468,16 +466,19 @@ def test_normal_carving_ci_rho_zero_matches_ordinary_z_interval():
     assert (lo, hi) == pytest.approx((x_obs - z * sigma_x, x_obs + z * sigma_x), abs=1e-6)
 
 
-def test_normal_carving_ci_rho_one_matches_mirrored_truncgauss_ci():
-    # rho->1 with sigma_x=sigma_y and x_obs < c mirrors truncgauss_ci's
-    # construction (X=Y, selection on the lower instead of upper tail) --
-    # reflecting both the input and the output around 0 relates the two.
-    sigma, alpha, x_obs, c = 1.3, 0.05, -0.5, 2.0
+def test_normal_carving_ci_rho_one_matches_truncgauss_ci():
+    # rho->1 with sigma_x=sigma_y and x_obs >= c means X=Y, so this
+    # matches truncgauss_ci's construction directly. x_obs is kept
+    # comfortably above c (mild truncation) so the root search doesn't need
+    # to probe deep into the joint tail, where scipy's generic bivariate
+    # normal CDF loses all precision (both the numerator and denominator
+    # genuinely underflow to 0 well before mu reaches the true root).
+    sigma, alpha, x_obs, c = 1.3, 0.05, 4.0, 2.0
     lo, hi = normal_carving_ci(
         x_obs, c, alpha=alpha, sigma_x=sigma, sigma_y=sigma, rho=1 - 1e-9
     )
-    lo_tg, hi_tg = truncgauss_ci(-x_obs, c=-c, alpha=alpha, scale=sigma)
-    assert (lo, hi) == pytest.approx((-hi_tg, -lo_tg), abs=1e-6)
+    lo_tg, hi_tg = truncgauss_ci(x_obs, c=c, alpha=alpha, scale=sigma)
+    assert (lo, hi) == pytest.approx((lo_tg, hi_tg), abs=1e-6)
 
 
 def test_normal_carving_ci_lower_below_upper():

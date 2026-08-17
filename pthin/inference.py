@@ -612,22 +612,23 @@ def truncgauss_ci(
 
 
 def _normal_carving_survival(mu, x, c, sigma_x, sigma_y, rho):
-    r"""``Pr_mu(X >= x | Y < c)`` for bivariate normal ``(X, Y)`` sharing mean ``mu``.
+    r"""``Pr_mu(X >= x | Y > c)`` for bivariate normal ``(X, Y)`` sharing mean ``mu``.
 
     Standardizing ``xi = (x - mu)/sigma_x``, ``gamma = (c - mu)/sigma_y``
     leaves the correlation ``rho`` between them unchanged (rescaling each
-    coordinate on its own doesn't touch their correlation), so
-    ``Pr(X <= x, Y < c) = Phi_2(xi, gamma; rho)``, the bivariate standard
-    normal CDF, and ``Pr(Y < c) = Phi(gamma)``. The survival function
-    follows by ``1 - Pr(X <= x | Y < c) = 1 - Phi_2(xi, gamma; rho)/Phi(gamma)``.
+    coordinate on its own doesn't touch their correlation). By
+    inclusion-exclusion, ``Pr(X >= x, Y > c) = 1 - Pr(X < x) - Pr(Y < c) +
+    Pr(X < x, Y < c) = 1 - Phi(xi) - Phi(gamma) + Phi_2(xi, gamma; rho)``,
+    the bivariate standard normal CDF, and ``Pr(Y > c) = 1 - Phi(gamma)``.
     """
     xi = (x - mu) / sigma_x
     gamma = (c - mu) / sigma_y
+    phi_xi = stats.norm.cdf(xi)
     phi_gamma = stats.norm.cdf(gamma)
     phi2 = stats.multivariate_normal(
         mean=[0.0, 0.0], cov=[[1.0, rho], [rho, 1.0]]
     ).cdf([xi, gamma])
-    return (phi_gamma - phi2) / phi_gamma
+    return (1 - phi_xi - phi_gamma + phi2) / (1 - phi_gamma)
 
 
 def normal_carving_pvalue(
@@ -644,29 +645,33 @@ def normal_carving_pvalue(
     \sigma_X^2 & \rho\sigma_X\sigma_Y \\ \rho\sigma_X\sigma_Y & \sigma_Y^2
     \end{psmallmatrix}\right)` -- a *shared* mean :math:`\mu`, known
     variances/correlation -- and the decision to conduct inference only on
-    the selection event :math:`Y < c`, the exact conditional p-value for
+    the selection event :math:`Y > c`, the exact conditional p-value for
     testing :math:`H_0: \mu = \mu_0` from the observed :math:`X = x` is
 
     .. math::
 
-        p^{\mathrm{NC}} := \Pr_{\mu_0}(X \ge x \mid Y < c)
-        = 1 - \frac{\Phi_2\!\left(\frac{x-\mu_0}{\sigma_X},
-        \frac{c-\mu_0}{\sigma_Y}; \rho\right)}{\Phi\!\left(\frac{c-\mu_0}{\sigma_Y}\right)},
+        p^{\mathrm{NC}} := \Pr_{\mu_0}(X \ge x \mid Y > c)
+        = \frac{1 - \Phi\!\left(\frac{x-\mu_0}{\sigma_X}\right)
+        - \Phi\!\left(\frac{c-\mu_0}{\sigma_Y}\right)
+        + \Phi_2\!\left(\frac{x-\mu_0}{\sigma_X},
+        \frac{c-\mu_0}{\sigma_Y}; \rho\right)}
+        {1 - \Phi\!\left(\frac{c-\mu_0}{\sigma_Y}\right)},
 
     where :math:`\Phi_2(\cdot,\cdot;\rho)` is the standard bivariate normal
     CDF with correlation :math:`\rho`. This is exactly uniform on ``(0,
-    1)`` under the null, conditional on :math:`Y < c` (verified by
+    1)`` under the null, conditional on :math:`Y > c` (verified by
     simulation), generalizing :func:`truncgauss_pvalue` (:math:`Y = X`,
-    i.e. :math:`\rho = 1` and :math:`\sigma_X = \sigma_Y`, recovers a
-    mirrored/lower-tail version of it) and ordinary (unconditional)
-    inference on :math:`X` (:math:`\rho = 0`, since then :math:`X \perp Y`
-    and selection carries no information about :math:`X`) as special
-    cases, in the spirit of Fithian, Sun & Taylor (2014) "data carving".
-    Unlike :func:`pcarve_threshold`/:func:`pcarve_ci`, no thinning or
-    universal bound is involved: the selection variable :math:`Y` and the
-    tested variable :math:`X` are simply allowed to be any two correlated
-    normals sharing the parameter of interest, rather than :math:`p_1(T)`
-    and :math:`T` derived from the same statistic via :func:`pthin.randomize.pthin`.
+    i.e. :math:`\rho = 1` and :math:`\sigma_X = \sigma_Y`, recovers it
+    exactly) and ordinary (unconditional) inference on :math:`X`
+    (:math:`\rho = 0`, since then :math:`X \perp Y` and selection carries
+    no information about :math:`X`) as special cases, in the spirit of
+    Fithian, Sun & Taylor (2014) "data carving". Unlike
+    :func:`pcarve_threshold`/:func:`pcarve_ci`, no thinning or universal
+    bound is involved: the selection variable :math:`Y` and the tested
+    variable :math:`X` are simply allowed to be any two correlated normals
+    sharing the parameter of interest, rather than :math:`p_1(T)` and
+    :math:`T` derived from the same statistic via
+    :func:`pthin.randomize.pthin`.
 
     Parameters
     ----------
@@ -675,7 +680,7 @@ def normal_carving_pvalue(
     mu0 : float
         Null value :math:`\mu_0` for the shared mean.
     c : float
-        Selection threshold: inference is conducted only given :math:`Y <
+        Selection threshold: inference is conducted only given :math:`Y >
         c`.
     sigma_x, sigma_y : float, default=1.0
         Standard deviations of :math:`X` and :math:`Y`.
@@ -721,9 +726,9 @@ def normal_carving_ci(
 
     .. math::
 
-        \Pr(\mu^* \in \mathrm{CI}^\alpha(X) \mid Y < c) = 1 - \alpha,
+        \Pr(\mu^* \in \mathrm{CI}^\alpha(X) \mid Y > c) = 1 - \alpha,
 
-    since :math:`R^{\mathrm{NC}}_\mu(x) := \Pr_\mu(X \ge x \mid Y < c)`
+    since :math:`R^{\mathrm{NC}}_\mu(x) := \Pr_\mu(X \ge x \mid Y > c)`
     (see :func:`_normal_carving_survival`) is available in closed form and
     monotonically increasing in :math:`\mu` (verified numerically), exactly
     as :func:`truncgauss_ci`'s :math:`R^{TG}_\theta`. As in
@@ -735,7 +740,7 @@ def normal_carving_ci(
     x_obs : float
         Observed value of :math:`X`.
     c : float
-        Selection threshold: inference is conducted only given :math:`Y <
+        Selection threshold: inference is conducted only given :math:`Y >
         c`.
     alpha : float, default=0.05
         Target miscoverage level; the returned interval targets coverage

@@ -160,15 +160,7 @@ def pcarve_estimate(
         Endpoints of the selection interval: inference is conducted only
         given :math:`p_1(T) \in [a, b]`, where :math:`p_1` is the thinned
         p-value from :func:`pthin.randomize.pthin`. Must satisfy ``0 <= a <
-        b <= 1``. ``b`` has no default. This event is the *caller's*
-        responsibility to have
-        actually arranged; it is not, and cannot be, checked from ``stat``
-        alone (see :func:`pcarve_ci`). ``a=0`` uses a much faster code path
-        than ``a > 0`` -- see :func:`pthin.inference._r_theta_a0`. ``b=1``
-        is also allowed (no upper constraint on the selection event); with
-        ``a=0`` too, this is the degenerate "no selection" case, where every
-        estimator reduces to the family's own unconditional MLE/mean at
-        ``t_obs``.
+        b <= 1``. ``b`` has no default.
     epsilon : float, default=0.5
         Thinning fraction used to construct the p-value used for selection,
         matching the ``epsilon`` of :func:`pthin.randomize.pthin`. Must lie
@@ -298,8 +290,8 @@ def truncgauss_estimate(
 ) -> float:
     r"""Point estimate of a normal mean truncated to ``T > c``.
 
-    The classic conditional-selective-inference point estimators (e.g.
-    :cite:`lee_exact_2016`, :cite:`ghosh_estimating_2008`), built from the
+    The classic conditional-selective-inference point estimators (e.g.,
+    :cite:`ghosh_estimating_2008`), built from the
     same conditional likelihood as :func:`truncgauss_ci`'s
     :math:`R^{TG}_\theta(t)`: the density (in :math:`t`) of :math:`T` at
     the observed value, given :math:`\theta` and conditional on :math:`T >

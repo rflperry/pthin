@@ -11,15 +11,14 @@ def pthin(
     epsilon: float = 0.5,
     rng: np.random.Generator | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    r"""Split p-values into two randomized, marginally valid p-values.
+    r"""Split a p-values into two randomized p-values.
 
-    Under the null hypothesis, a p-value ``p`` is (super-)uniform on
+    Under the null hypothesis, a p-value ``p`` is uniform on
     ``[0, 1]``. ``pthin`` uses independent auxiliary randomness to derive a
     pair ``(p1, p2)`` from ``p`` such that, under the null, ``p1`` and ``p2``
-    are each *also* (super-)uniform on ``[0, 1]`` and approximately
-    independent of one another. This lets one thinned p-value be used to
-    select a hypothesis or threshold and the other for inference, avoiding
-    the double-dipping that would come from reusing ``p`` for both.
+    are each *also* uniform on ``[0, 1]`` and 
+    independent. This lets one thinned p-value be used to
+    select a hypothesis or threshold and the other for inference.
 
     For each entry of ``p``, draw ``Z ~ Uniform(0, 1)`` and
     ``C ~ Bernoulli(epsilon)`` independently, and set:

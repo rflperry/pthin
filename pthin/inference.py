@@ -60,23 +60,6 @@ def _nu_density(q, a, b, epsilon):
 
 def _nu_cdf(t, a, b, epsilon):
     r"""Closed form of ``N(t) = int_0^t d nu_{a,b}(q)``, the reference CDF.
-
-    This uses a ``1/(b - a)`` normalization rather than the ``1/(a - b)`` in
-    ``_nu_density``. In ``_r_theta``, ``_nu_density`` appears in both the
-    numerator and denominator of a ratio, so its sign is irrelevant there.
-    Used bare, as it is for the hypothesis-testing bound below, the ``(a -
-    b)`` convention (with ``a < b``, matching the ``p_1 in [a, b]``
-    selection interval elsewhere in this module) gives a *negative*,
-    decreasing function of ``t`` -- which cannot bound a probability, since
-    ``Pr(p <= t | ...) >= 0`` for every ``t``. The ``(b - a)`` convention
-    used here instead makes ``N`` non-negative, non-decreasing, and
-    satisfies ``N(1) = 1`` for every ``0 <= a < b <= 1`` and ``0 < epsilon <
-    1``, i.e. a genuine CDF on ``[0, 1]``.
-
-    Obtained by direct antiderivatives of ``_nu_density``'s three pieces
-    (zero below ``a**(1/epsilon)``, a linear-minus-power piece up to
-    ``b**(1/epsilon)``, then a pure power-law tail), verified against
-    numerical integration of ``-_nu_density`` to ~1e-12.
     """
     q_a = a ** (1 / epsilon)
     q_b = b ** (1 / epsilon)
@@ -92,10 +75,7 @@ def _split_integrate(integrand, lo, hi, breakpoints, **quad_kwargs):
     """``quad`` from ``lo`` to ``hi``, pre-splitting at any interior breakpoints.
 
     ``nu_density`` is only piecewise smooth, with kinks at the two
-    breakpoints below. Handing an unbounded interval containing those kinks
-    to a single adaptive-quadrature call forces it to rediscover the
-    non-smoothness by trial and error, which is drastically slower than
-    integrating each smooth piece separately.
+    breakpoints below.
     """
     points = sorted(p for p in breakpoints if lo < p < hi)
     bounds = [lo, *points, hi]
@@ -154,9 +134,7 @@ def _a0_tail_weight(q, epsilon):
 def _r_theta_a0(theta, t_obs, theta0, b, epsilon, density, quad_kwargs):
     r"""``a=0`` fast path shared by ``_denominator`` and ``_r_theta``.
 
-    Mirrors ``experiments/normal_ci.ipynb``'s ``calc_r_mu`` (the ``a=0``,
-    ``epsilon=0.5`` closed-form special case this generalizes to arbitrary
-    ``epsilon``): with ``a=0``, the reference measure's density is constant
+    With ``a=0``, the reference measure's density is constant
     for ``q <= b**(1/epsilon)`` (i.e. ``z >= z_qb``) and a pure power law
     above it, so the constant-density piece integrates in closed form
     (``g_theta.sf``) and only the power-law piece needs ``quad`` -- instead
@@ -294,12 +272,11 @@ def pcarve_ci(
 ) -> tuple[float, float]:
     r"""Conditional confidence interval for a location parameter after selection.
 
-    Implements the confidence set of Theorem (conditional confidence
-    interval under p-value masking): given a test statistic :math:`T \sim
+    Returns the confidence set given a test statistic :math:`T \sim
     g_{\theta^*}`, its upper-tailed p-value :math:`p_{\theta_0}(T) = 1 -
     G_{\theta_0}(T)` against a null :math:`\theta_0`, and the decision to
-    conduct inference only on the event :math:`p_{\theta_0}(T) \in [a, b]`,
-    this returns an interval :math:`\mathrm{CI}^\alpha(T)` satisfying
+    conduct inference only on the event :math:`p_{\theta_0}(T) \in [a, b]`.
+    The interval :math:`\mathrm{CI}^\alpha(T)` satisfies
 
     .. math::
 
@@ -335,18 +312,7 @@ def pcarve_ci(
         Endpoints of the selection interval: inference is conducted only
         given :math:`p_1(T) \in [a, b]`, where :math:`p_1` is the thinned
         p-value from :func:`pthin.randomize.pthin`. Must satisfy ``0 <= a <
-        b <= 1``. ``b`` has no default -- it is the *caller's*
-        responsibility to have actually arranged (e.g. by selecting on
-        :math:`p_1 \le b`); it is
-        not, and cannot be, checked from ``stat`` alone, since :math:`p_1`
-        is an independent random quantity not derivable from :math:`T` or
-        its raw p-value. ``a=0`` (e.g. an "arg min :math:`p_1`" selection
-        rule, where ``b`` is the runner-up's :math:`p_1`) uses a much
-        faster code path than ``a > 0`` -- see :func:`_r_theta_a0`. ``b=1``
-        (e.g. no upper constraint on the selection event) is also allowed;
-        together with ``a=0`` this is the degenerate "no selection" case,
-        where :math:`R_\theta(t)` collapses exactly to the family's own
-        unconditional survival function :math:`1 - G_\theta(t)`.
+        b <= 1``. ``b`` has no default.
     epsilon : float, default=0.5
         Thinning fraction used to construct the p-value used for selection,
         matching the ``epsilon`` of :func:`pthin.randomize.pthin`. Must lie
@@ -426,16 +392,7 @@ def pcarve_threshold(
     b: float,
     epsilon: float = 0.5,
 ) -> float:
-    r"""Rejection threshold for a p-value after selection on its thinned mask.
-
-    Implements the Lemma bounding the conditional false-positive rate of
-    testing the original p-value :math:`p` after selecting on the thinned
-    p-value :math:`p_1` (see :func:`pthin.randomize.pthin`) landing in
-    :math:`[a, b]`: for any :math:`t \in (0, 1)`,
-
-    .. math::
-
-        \Pr(p \le t \mid p_1 \in [a, b]) \le \int_0^t d\nu_{a,b}(q).
+    r"""Rejection threshold for a p-value after selection on :math:`p1`
 
     This function returns that
     :math:`t^\star(\alpha)`: rejecting whenever :math:`p \le t^\star(\alpha)`
@@ -502,8 +459,8 @@ def _truncgauss_survival(theta, t, c, scale):
 def truncgauss_pvalue(t_obs: float, theta0: float, c: float, scale: float = 1.0) -> float:
     r"""Exact conditional p-value for a normal mean truncated to ``T > c``.
 
-    The classic conditional-selective-inference construction (e.g.
-    :cite:`lee_exact_2016`): given :math:`T \sim N(\theta_0, \text{scale}^2)`
+    The classic conditional-selective-inference construction
+    given :math:`T \sim N(\theta_0, \text{scale}^2)`
     under the null and conditioning on the selection event :math:`T > c`,
 
     .. math::
@@ -515,9 +472,7 @@ def truncgauss_pvalue(t_obs: float, theta0: float, c: float, scale: float = 1.0)
     is exactly (not merely boundedly) uniform on ``(0, 1)`` under the null,
     conditional on ``T > c``, so rejecting :math:`H_0: \theta = \theta_0`
     when :math:`p^{\mathrm{TG}} \le \alpha` controls the conditional
-    false-positive rate at exactly :math:`\alpha`. Contrast
-    :func:`pcarve_threshold`, whose bound is only exact when the selection
-    variable and the tested statistic coincide, as they do here.
+    false-positive rate at exactly :math:`\alpha`.
 
     Parameters
     ----------
@@ -561,8 +516,8 @@ def truncgauss_ci(
 ) -> tuple[float, float]:
     r"""Confidence interval for a normal mean truncated to ``T > c``.
 
-    The classic conditional-selective-inference CI (e.g.
-    :cite:`lee_exact_2016`): inverting :func:`truncgauss_pvalue`-style
+    The classic conditional-selective-inference CI
+    inverting :func:`truncgauss_pvalue`-style
     tails at :math:`\alpha/2` and :math:`1 - \alpha/2` gives an interval
     :math:`\mathrm{CI}^\alpha(T)` with *exact* conditional coverage,
 
@@ -739,9 +694,7 @@ def normal_carving_ci(
     since :math:`R^{\mathrm{NC}}_\mu(x) := \Pr_\mu(X \ge x \mid Y > c)`
     (see :func:`_normal_carving_survival`) is available in closed form and
     monotonically increasing in :math:`\mu` (verified numerically), exactly
-    as :func:`truncgauss_ci`'s :math:`R^{TG}_\theta`. As in
-    :func:`truncgauss_ci`, no null value :math:`\mu_0` is needed here: a
-    confidence interval doesn't test a specific hypothesis.
+    as :func:`truncgauss_ci`'s :math:`R^{TG}_\theta`.
 
     Parameters
     ----------

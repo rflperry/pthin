@@ -17,7 +17,6 @@ This allows one to be used for selection and the other for inference.
 
 ```python
 import numpy as np
-from scipy.stats import norm
 from pthin import pthin, pcarve_threshold, pcarve_ci, pcarve_estimate
 
 # p-values and significance level

@@ -70,7 +70,7 @@ def _nu_cdf(t, a, b, epsilon):
     decreasing function of ``t`` -- which cannot bound a probability, since
     ``Pr(p <= t | ...) >= 0`` for every ``t``. The ``(b - a)`` convention
     used here instead makes ``N`` non-negative, non-decreasing, and
-    satisfies ``N(1) = 1`` for every ``0 < a < b < 1`` and ``0 < epsilon <
+    satisfies ``N(1) = 1`` for every ``0 <= a < b <= 1`` and ``0 < epsilon <
     1``, i.e. a genuine CDF on ``[0, 1]``.
 
     Obtained by direct antiderivatives of ``_nu_density``'s three pieces
@@ -280,8 +280,9 @@ def _find_root(f, x0, target, search_radii=(5, 20, 60, 200)):
 
 def pcarve_ci(
     stat: float,
-    theta0: float,
-    a: float,
+    *,
+    theta0: float = 0.0,
+    a: float = 0.0,
     b: float,
     epsilon: float = 0.5,
     alpha: float = 0.05,
@@ -316,6 +317,8 @@ def pcarve_ci(
     endpoints by root-finding in :math:`\theta`, so this is exact only up to
     numerical-integration and root-finding tolerance.
 
+    All parameters other than ``stat`` are keyword-only.
+
     Parameters
     ----------
     stat : float
@@ -324,20 +327,26 @@ def pcarve_ci(
         :math:`T` itself (when ``input_type="statistic"``) -- this is *not*
         the thinned p-value :math:`p_1(T)` used for selection below, which
         this function never sees directly.
-    theta0 : float
+    theta0 : float, default=0.0
         Null value :math:`\theta_0` defining the upper-tailed p-value
         :math:`p_{\theta_0}(t) = 1 - G_{\theta_0}(t)`.
-    a, b : float
+    a : float, default=0.0
+    b : float
         Endpoints of the selection interval: inference is conducted only
         given :math:`p_1(T) \in [a, b]`, where :math:`p_1` is the thinned
         p-value from :func:`pthin.randomize.pthin`. Must satisfy ``0 <= a <
-        b < 1``. This event is the *caller's* responsibility to have
-        actually arranged (e.g. by selecting on :math:`p_1 \le b`); it is
+        b <= 1``. ``b`` has no default -- it is the *caller's*
+        responsibility to have actually arranged (e.g. by selecting on
+        :math:`p_1 \le b`); it is
         not, and cannot be, checked from ``stat`` alone, since :math:`p_1`
         is an independent random quantity not derivable from :math:`T` or
         its raw p-value. ``a=0`` (e.g. an "arg min :math:`p_1`" selection
         rule, where ``b`` is the runner-up's :math:`p_1`) uses a much
-        faster code path than ``a > 0`` -- see :func:`_r_theta_a0`.
+        faster code path than ``a > 0`` -- see :func:`_r_theta_a0`. ``b=1``
+        (e.g. no upper constraint on the selection event) is also allowed;
+        together with ``a=0`` this is the degenerate "no selection" case,
+        where :math:`R_\theta(t)` collapses exactly to the family's own
+        unconditional survival function :math:`1 - G_\theta(t)`.
     epsilon : float, default=0.5
         Thinning fraction used to construct the p-value used for selection,
         matching the ``epsilon`` of :func:`pthin.randomize.pthin`. Must lie
@@ -378,8 +387,8 @@ def pcarve_ci(
         If ``a``, ``b``, ``epsilon``, or ``alpha`` are out of range, or if
         ``input_type`` is not recognized.
     """
-    if not 0 <= a < b < 1:
-        raise ValueError(f"Require 0 <= a < b < 1, got a={a}, b={b}")
+    if not 0 <= a < b <= 1:
+        raise ValueError(f"Require 0 <= a < b <= 1, got a={a}, b={b}")
     if not 0 < epsilon < 1:
         raise ValueError(f"epsilon must lie in (0, 1), got {epsilon}")
     if not 0 < alpha < 1:
@@ -412,7 +421,8 @@ def pcarve_ci(
 
 def pcarve_threshold(
     alpha: float,
-    a: float,
+    *,
+    a: float = 0.0,
     b: float,
     epsilon: float = 0.5,
 ) -> float:
@@ -435,13 +445,17 @@ def pcarve_threshold(
 
         \Pr(p \le t^\star(\alpha) \mid p_1 \in [a, b]) \le \alpha.
 
+    All parameters other than ``alpha`` are keyword-only.
+
     Parameters
     ----------
     alpha : float
         Target conditional false-positive rate. Must lie in ``(0, 1)``.
-    a, b : float
+    a : float, default=0.0
+    b : float
         Endpoints of the selection interval: inference is conducted only
-        given :math:`p_1 \in [a, b]`. Must satisfy ``0 < a < b < 1``.
+        given :math:`p_1 \in [a, b]`. Must satisfy ``0 <= a < b <= 1``. ``b``
+        has no default.
     epsilon : float, default=0.5
         Thinning fraction used to construct :math:`p_1`, matching the
         ``epsilon`` of :func:`pthin.randomize.pthin`. Must lie in ``(0, 1)``.
@@ -458,8 +472,8 @@ def pcarve_threshold(
     """
     if not 0 < alpha < 1:
         raise ValueError(f"alpha must lie in (0, 1), got {alpha}")
-    if not 0 < a < b < 1:
-        raise ValueError(f"Require 0 < a < b < 1, got a={a}, b={b}")
+    if not 0 <= a < b <= 1:
+        raise ValueError(f"Require 0 <= a < b <= 1, got a={a}, b={b}")
     if not 0 < epsilon < 1:
         raise ValueError(f"epsilon must lie in (0, 1), got {epsilon}")
 

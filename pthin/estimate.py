@@ -94,8 +94,9 @@ def _mean(
 
 def pcarve_estimate(
     stat: float,
-    theta0: float,
-    a: float,
+    *,
+    theta0: float = 0.0,
+    a: float = 0.0,
     b: float,
     epsilon: float = 0.5,
     density: DensityFamily = "normal",
@@ -141,6 +142,8 @@ def pcarve_estimate(
     bracketed optimization and is not subject to grid error; ``"combined"``
     inherits the grid error of its ``"mean"`` half.
 
+    All parameters other than ``stat`` are keyword-only.
+
     Parameters
     ----------
     stat : float
@@ -149,17 +152,23 @@ def pcarve_estimate(
         :math:`T` itself (when ``input_type="statistic"``) -- this is *not*
         the thinned p-value :math:`p_1(T)` used for selection below, which
         this function never sees directly.
-    theta0 : float
+    theta0 : float, default=0.0
         Null value :math:`\theta_0` defining the upper-tailed p-value
         :math:`p_{\theta_0}(t) = 1 - G_{\theta_0}(t)`.
-    a, b : float
+    a : float, default=0.0
+    b : float
         Endpoints of the selection interval: inference is conducted only
         given :math:`p_1(T) \in [a, b]`, where :math:`p_1` is the thinned
         p-value from :func:`pthin.randomize.pthin`. Must satisfy ``0 <= a <
-        b < 1``. This event is the *caller's* responsibility to have
+        b <= 1``. ``b`` has no default. This event is the *caller's*
+        responsibility to have
         actually arranged; it is not, and cannot be, checked from ``stat``
         alone (see :func:`pcarve_ci`). ``a=0`` uses a much faster code path
-        than ``a > 0`` -- see :func:`pthin.inference._r_theta_a0`.
+        than ``a > 0`` -- see :func:`pthin.inference._r_theta_a0`. ``b=1``
+        is also allowed (no upper constraint on the selection event); with
+        ``a=0`` too, this is the degenerate "no selection" case, where every
+        estimator reduces to the family's own unconditional MLE/mean at
+        ``t_obs``.
     epsilon : float, default=0.5
         Thinning fraction used to construct the p-value used for selection,
         matching the ``epsilon`` of :func:`pthin.randomize.pthin`. Must lie
@@ -203,8 +212,8 @@ def pcarve_estimate(
         If ``a``, ``b``, or ``epsilon`` are out of range, or if
         ``density``, ``input_type``, or ``estimator`` is not recognized.
     """
-    if not 0 <= a < b < 1:
-        raise ValueError(f"Require 0 <= a < b < 1, got a={a}, b={b}")
+    if not 0 <= a < b <= 1:
+        raise ValueError(f"Require 0 <= a < b <= 1, got a={a}, b={b}")
     if not 0 < epsilon < 1:
         raise ValueError(f"epsilon must lie in (0, 1), got {epsilon}")
     if density != "normal" and not callable(density):

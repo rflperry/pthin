@@ -6,15 +6,15 @@ from pthin.estimate import normal_carving_estimate, pcarve_estimate, truncgauss_
 
 
 def test_no_truncation_all_estimators_recover_t_obs():
-    # a -> 0, b -> 1 means "always conduct inference" (no conditioning), so
-    # the conditional likelihood in theta reduces to the family's own
-    # (symmetric) density g_theta(t_obs), whose mode and mean both sit
-    # exactly at theta = t_obs.
+    # a=0, b=1 (both exact) means "always conduct inference" (no
+    # conditioning), so the conditional likelihood in theta reduces to the
+    # family's own (symmetric) density g_theta(t_obs), whose mode and mean
+    # both sit exactly at theta = t_obs.
     theta0, t_obs = 0.0, 1.3
-    a, b = 1e-9, 1 - 1e-9
+    a, b = 0.0, 1.0
     for estimator in ["mle", "mean", "combined"]:
         value = pcarve_estimate(
-            t_obs, theta0, a, b, estimator=estimator, input_type="statistic"
+            t_obs, theta0=theta0, a=a, b=b, estimator=estimator, input_type="statistic"
         )
         assert value == pytest.approx(t_obs, abs=1e-3)
 
@@ -22,13 +22,13 @@ def test_no_truncation_all_estimators_recover_t_obs():
 def test_combined_is_average_of_mean_and_mle():
     theta0, t_obs, a, b = 0.0, 1.2, 0.1, 0.4
     mle = pcarve_estimate(
-        t_obs, theta0, a, b, estimator="mle", input_type="statistic"
+        t_obs, theta0=theta0, a=a, b=b, estimator="mle", input_type="statistic"
     )
     mean = pcarve_estimate(
-        t_obs, theta0, a, b, estimator="mean", input_type="statistic"
+        t_obs, theta0=theta0, a=a, b=b, estimator="mean", input_type="statistic"
     )
     combined = pcarve_estimate(
-        t_obs, theta0, a, b, estimator="combined", input_type="statistic"
+        t_obs, theta0=theta0, a=a, b=b, estimator="combined", input_type="statistic"
     )
     assert combined == pytest.approx((mean + mle) / 2, abs=1e-6)
 
@@ -37,41 +37,78 @@ def test_pvalue_and_statistic_inputs_agree_for_mle():
     theta0, a, b = 0.0, 0.1, 0.4
     t_obs = 1.2
     p_obs = stats.norm.sf(t_obs, loc=theta0, scale=1.0)
-    mle_t = pcarve_estimate(t_obs, theta0, a, b, input_type="statistic")
-    mle_p = pcarve_estimate(p_obs, theta0, a, b, input_type="pvalue")
+    mle_t = pcarve_estimate(t_obs, theta0=theta0, a=a, b=b, input_type="statistic")
+    mle_p = pcarve_estimate(p_obs, theta0=theta0, a=a, b=b, input_type="pvalue")
     assert mle_t == pytest.approx(mle_p, abs=1e-6)
 
 
 def test_invalid_estimator_raises():
     with pytest.raises(ValueError):
         pcarve_estimate(
-            1.2, 0.0, a=0.1, b=0.4, estimator="bogus", input_type="statistic"
+            1.2, theta0=0.0, a=0.1, b=0.4, estimator="bogus", input_type="statistic"
         )
+
+
+def test_allows_b_equals_one():
+    a, theta0, t_obs = 0.1, 0.0, 1.2
+    exact = pcarve_estimate(t_obs, theta0=theta0, a=a, b=1.0, input_type="statistic")
+    approx = pcarve_estimate(t_obs, theta0=theta0, a=a, b=1 - 1e-9, input_type="statistic")
+    assert exact == pytest.approx(approx, abs=1e-4)
+
+
+def test_defaults_theta0_and_a_to_zero():
+    # theta0 and a are keyword-only with defaults of 0.0; omitting them
+    # should match passing them explicitly.
+    t_obs, b = 1.2, 0.4
+    value = pcarve_estimate(t_obs, b=b, input_type="statistic")
+    reference = pcarve_estimate(t_obs, theta0=0.0, a=0.0, b=b, input_type="statistic")
+    assert value == pytest.approx(reference, abs=1e-10)
 
 
 def test_invalid_selection_interval_raises():
     with pytest.raises(ValueError):
-        pcarve_estimate(1.2, 0.0, a=0.5, b=0.4, input_type="statistic")
+        pcarve_estimate(1.2, theta0=0.0, a=0.5, b=0.4, input_type="statistic")
+
+
+def test_rejects_b_greater_than_one():
+    with pytest.raises(ValueError):
+        pcarve_estimate(1.2, theta0=0.0, a=0.1, b=1.1, input_type="statistic")
+
+
+def test_rejects_a_equals_b():
+    with pytest.raises(ValueError):
+        pcarve_estimate(1.2, theta0=0.0, a=0.3, b=0.3, input_type="statistic")
+
+
+def test_rejects_negative_a():
+    with pytest.raises(ValueError):
+        pcarve_estimate(1.2, theta0=0.0, a=-0.1, b=0.4, input_type="statistic")
+
+
+def test_requires_b_as_keyword():
+    # b has no default and is keyword-only, so it must be passed by name.
+    with pytest.raises(TypeError):
+        pcarve_estimate(1.2, 0.0, 0.1, 0.4)  # noqa: PT011 -- deliberately positional
 
 
 def test_invalid_epsilon_raises():
     with pytest.raises(ValueError):
         pcarve_estimate(
-            1.2, 0.0, a=0.1, b=0.4, epsilon=1.5, input_type="statistic"
+            1.2, theta0=0.0, a=0.1, b=0.4, epsilon=1.5, input_type="statistic"
         )
 
 
 def test_invalid_density_raises():
     with pytest.raises(ValueError):
         pcarve_estimate(
-            1.2, 0.0, a=0.1, b=0.4, density=42, input_type="statistic"
+            1.2, theta0=0.0, a=0.1, b=0.4, density=42, input_type="statistic"
         )
 
 
 def test_invalid_input_kind_raises():
     with pytest.raises(ValueError):
         pcarve_estimate(
-            1.2, 0.0, a=0.1, b=0.4, input_type="not-a-real-option"
+            1.2, theta0=0.0, a=0.1, b=0.4, input_type="not-a-real-option"
         )
 
 
@@ -79,7 +116,7 @@ def test_raw_pvalue_outside_ab_does_not_raise():
     # a, b describe the selection event on the thinned p-value p1(T), not
     # on T's own raw p-value -- see the matching regression test in
     # test_inference.py for why this must not raise.
-    pcarve_estimate(0.9, 0.0, a=0.05, b=0.4, input_type="pvalue")
+    pcarve_estimate(0.9, theta0=0.0, a=0.05, b=0.4, input_type="pvalue")
 
 
 def test_a0_mle_and_mean_are_pulled_below_t_obs_and_close_to_general_path():
@@ -90,11 +127,11 @@ def test_a0_mle_and_mean_are_pulled_below_t_obs_and_close_to_general_path():
     theta0, t_obs, b = 0.0, 2.126, 0.1
     for estimator in ["mle", "mean"]:
         a0 = pcarve_estimate(
-            t_obs, theta0, a=0.0, b=b, estimator=estimator, input_type="statistic",
+            t_obs, theta0=theta0, a=0.0, b=b, estimator=estimator, input_type="statistic",
             epsabs=1e-6, epsrel=1e-6,
         )
         general = pcarve_estimate(
-            t_obs, theta0, a=1e-9, b=b, estimator=estimator, input_type="statistic",
+            t_obs, theta0=theta0, a=1e-9, b=b, estimator=estimator, input_type="statistic",
             epsabs=1e-6, epsrel=1e-6,
         )
         assert a0 < t_obs
@@ -116,11 +153,11 @@ def test_theta_bound_mean_matches_mle_ballpark_for_symmetric_family():
     x_obs, b = 3.0, 0.05
 
     mle = pcarve_estimate(
-        x_obs, 0.0, a=0.0, b=b, density=density, estimator="mle",
+        x_obs, theta0=0.0, a=0.0, b=b, density=density, estimator="mle",
         input_type="statistic", epsabs=1e-6, epsrel=1e-6, theta_min=0.0,
     )
     mean = pcarve_estimate(
-        x_obs, 0.0, a=0.0, b=b, density=density, estimator="mean",
+        x_obs, theta0=0.0, a=0.0, b=b, density=density, estimator="mean",
         input_type="statistic", epsabs=1e-6, epsrel=1e-6, n_points=81, theta_min=0.0,
     )
     assert mle > 0
@@ -133,7 +170,7 @@ def test_theta_min_zero_gives_nonnegative_estimates():
     for x_obs in [0.5, 1.5, 3.0, 5.0]:
         for estimator in ["mle", "mean", "combined"]:
             value = pcarve_estimate(
-                x_obs, 0.0, a=0.0, b=0.05, density=density, estimator=estimator,
+                x_obs, theta0=0.0, a=0.0, b=0.05, density=density, estimator=estimator,
                 input_type="statistic", epsabs=1e-6, epsrel=1e-6, n_points=61,
                 theta_min=0.0,
             )
@@ -150,7 +187,7 @@ def test_theta_bounds_no_truncation_recovers_t_obs_for_symmetric_family():
     x_obs = 3.0
     for estimator in ["mle", "mean"]:
         value = pcarve_estimate(
-            x_obs, 0.0, a=1e-9, b=1 - 1e-9, density=density, estimator=estimator,
+            x_obs, theta0=0.0, a=0.0, b=1.0, density=density, estimator=estimator,
             input_type="statistic", theta_min=0.0,
         )
         assert value == pytest.approx(x_obs, abs=1e-2)

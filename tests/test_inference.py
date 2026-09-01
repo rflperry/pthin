@@ -22,11 +22,12 @@ from pthin.inference import (
 
 
 def test_no_truncation_recovers_standard_normal_ci():
-    # a -> 0, b -> 1 means "always conduct inference" (no conditioning), so
-    # the conditional interval should collapse to the textbook z-interval.
+    # a=0, b=1 means "always conduct inference" (no conditioning), so the
+    # conditional interval should collapse exactly to the textbook
+    # z-interval. Both endpoints are exact (not a limiting approximation).
     t_obs, theta0, alpha = 1.3, 0.0, 0.05
     lo, hi = pcarve_ci(
-        t_obs, theta0, a=1e-9, b=1 - 1e-9, epsilon=0.5, alpha=alpha, input_type="statistic"
+        t_obs, theta0=theta0, a=0.0, b=1.0, epsilon=0.5, alpha=alpha, input_type="statistic"
     )
     z = stats.norm.isf(alpha / 2)
     np.testing.assert_allclose([lo, hi], [t_obs - z, t_obs + z], atol=1e-4)
@@ -38,10 +39,10 @@ def test_pvalue_and_statistic_inputs_agree():
     p_obs = stats.norm.sf(t_obs, loc=theta0, scale=1.0)
 
     lo_t, hi_t = pcarve_ci(
-        t_obs, theta0, a, b, epsilon=epsilon, alpha=alpha, input_type="statistic"
+        t_obs, theta0=theta0, a=a, b=b, epsilon=epsilon, alpha=alpha, input_type="statistic"
     )
     lo_p, hi_p = pcarve_ci(
-        p_obs, theta0, a, b, epsilon=epsilon, alpha=alpha, input_type="pvalue"
+        p_obs, theta0=theta0, a=a, b=b, epsilon=epsilon, alpha=alpha, input_type="pvalue"
     )
     np.testing.assert_allclose([lo_t, hi_t], [lo_p, hi_p], rtol=1e-6)
 
@@ -123,9 +124,45 @@ def test_pcarve_ci_allows_a_equals_zero():
     np.testing.assert_allclose([lo, hi], [lo_ref, hi_ref], atol=1e-4)
 
 
+def test_pcarve_ci_allows_b_equals_one():
+    lo, hi = pcarve_ci(
+        1.5, theta0=0.0, a=0.1, b=1.0, epsilon=0.5, alpha=0.05, input_type="statistic"
+    )
+    lo_ref, hi_ref = pcarve_ci(
+        1.5, theta0=0.0, a=0.1, b=1 - 1e-9, epsilon=0.5, alpha=0.05, input_type="statistic"
+    )
+    np.testing.assert_allclose([lo, hi], [lo_ref, hi_ref], atol=1e-4)
+
+
+def test_pcarve_ci_defaults_theta0_and_a_to_zero():
+    # theta0 and a are keyword-only with defaults of 0.0; omitting them
+    # should match passing them explicitly.
+    lo, hi = pcarve_ci(1.5, b=0.3, epsilon=0.5, alpha=0.05, input_type="statistic")
+    lo_ref, hi_ref = pcarve_ci(
+        1.5, theta0=0.0, a=0.0, b=0.3, epsilon=0.5, alpha=0.05, input_type="statistic"
+    )
+    assert (lo, hi) == (lo_ref, hi_ref)
+
+
 def test_pcarve_ci_rejects_negative_a():
     with pytest.raises(ValueError):
-        pcarve_ci(1.5, 0.0, a=-0.1, b=0.4, input_type="statistic")
+        pcarve_ci(1.5, theta0=0.0, a=-0.1, b=0.4, input_type="statistic")
+
+
+def test_pcarve_ci_rejects_b_greater_than_one():
+    with pytest.raises(ValueError):
+        pcarve_ci(1.5, theta0=0.0, a=0.1, b=1.1, input_type="statistic")
+
+
+def test_pcarve_ci_rejects_a_equals_b():
+    with pytest.raises(ValueError):
+        pcarve_ci(1.5, theta0=0.0, a=0.3, b=0.3, input_type="statistic")
+
+
+def test_pcarve_ci_requires_b_as_keyword():
+    # b has no default and is keyword-only, so it must be passed by name.
+    with pytest.raises(TypeError):
+        pcarve_ci(1.5, 0.0, 0.1, 0.4)  # noqa: PT011 -- deliberately positional
 
 
 def test_pcarve_ci_custom_tolerance_is_close_to_default():
@@ -153,13 +190,13 @@ def test_r_theta_is_increasing_in_theta():
 def test_custom_normal_callable_matches_builtin_normal_string():
     theta0, a, b, epsilon, alpha, t_obs = 0.0, 0.05, 0.4, 0.6, 0.1, 1.4
     lo_builtin, hi_builtin = pcarve_ci(
-        t_obs, theta0, a, b, epsilon=epsilon, alpha=alpha, input_type="statistic"
+        t_obs, theta0=theta0, a=a, b=b, epsilon=epsilon, alpha=alpha, input_type="statistic"
     )
     lo_custom, hi_custom = pcarve_ci(
         t_obs,
-        theta0,
-        a,
-        b,
+        theta0=theta0,
+        a=a,
+        b=b,
         epsilon=epsilon,
         alpha=alpha,
         input_type="statistic",
@@ -171,11 +208,11 @@ def test_custom_normal_callable_matches_builtin_normal_string():
 
 
 def test_custom_density_r_theta_matches_analytic_reference():
-    # With no truncation (a -> 0, b -> 1), R_theta(t) reduces exactly to the
-    # family's own upper-tailed p-value 1 - G_theta(t), regardless of family
-    # -- so this checks the custom-density code path against a
+    # With no truncation (a=0, b=1, both exact), R_theta(t) reduces exactly
+    # to the family's own upper-tailed p-value 1 - G_theta(t), regardless of
+    # family -- so this checks the custom-density code path against a
     # family-agnostic closed form without the cost of full root-finding.
-    t_obs, theta0, a, b, epsilon = 1.1, 0.0, 1e-9, 1 - 1e-9, 0.5
+    t_obs, theta0, a, b, epsilon = 1.1, 0.0, 0.0, 1.0, 0.5
     laplace = lambda theta: stats.laplace(loc=theta, scale=1.0)
     for theta in [-0.5, 0.0, 0.7]:
         r_value = _r_theta(theta, t_obs, theta0, a, b, epsilon, laplace)
@@ -186,33 +223,33 @@ def test_custom_density_r_theta_matches_analytic_reference():
 def test_invalid_density_raises():
     with pytest.raises(ValueError):
         pcarve_ci(
-            1.0, 0.0, a=0.05, b=0.4, density=42, input_type="statistic"
+            1.0, theta0=0.0, a=0.05, b=0.4, density=42, input_type="statistic"
         )
 
 
 def test_invalid_selection_interval_raises():
     with pytest.raises(ValueError):
-        pcarve_ci(1.0, 0.0, a=0.5, b=0.4, input_type="statistic")
+        pcarve_ci(1.0, theta0=0.0, a=0.5, b=0.4, input_type="statistic")
 
 
 def test_invalid_epsilon_raises():
     with pytest.raises(ValueError):
         pcarve_ci(
-            1.0, 0.0, a=0.05, b=0.4, epsilon=1.5, input_type="statistic"
+            1.0, theta0=0.0, a=0.05, b=0.4, epsilon=1.5, input_type="statistic"
         )
 
 
 def test_invalid_alpha_raises():
     with pytest.raises(ValueError):
         pcarve_ci(
-            1.0, 0.0, a=0.05, b=0.4, alpha=1.5, input_type="statistic"
+            1.0, theta0=0.0, a=0.05, b=0.4, alpha=1.5, input_type="statistic"
         )
 
 
 def test_invalid_input_kind_raises():
     with pytest.raises(ValueError):
         pcarve_ci(
-            1.0, 0.0, a=0.05, b=0.4, input_type="not-a-real-option"
+            1.0, theta0=0.0, a=0.05, b=0.4, input_type="not-a-real-option"
         )
 
 
@@ -223,7 +260,7 @@ def test_raw_pvalue_outside_ab_does_not_raise():
     # incorrectly raise, which (per test_argmin_selection_raw_pvalue_is_
     # usually_outside_ab below) rejected the majority of legitimate calls
     # in an argmin-style selection scenario.
-    pcarve_ci(0.9, 0.0, a=0.05, b=0.4, input_type="pvalue")
+    pcarve_ci(0.9, theta0=0.0, a=0.05, b=0.4, input_type="pvalue")
 
 
 def test_argmin_selection_raw_pvalue_is_usually_outside_ab():
@@ -273,7 +310,7 @@ def test_nu_cdf_is_a_valid_cdf(a, b, epsilon):
 
 def test_pcarve_threshold_inverts_nu_cdf():
     alpha, a, b, epsilon = 0.05, 0.1, 0.4, 0.5
-    t_star = pcarve_threshold(alpha, a, b, epsilon=epsilon)
+    t_star = pcarve_threshold(alpha, a=a, b=b, epsilon=epsilon)
     assert _nu_cdf(t_star, a, b, epsilon) == pytest.approx(alpha, abs=1e-10)
 
 
@@ -281,10 +318,36 @@ def test_pcarve_threshold_increasing_in_alpha():
     a, b, epsilon = 0.1, 0.4, 0.5
     alphas = [0.01, 0.05, 0.1, 0.3, 0.5, 0.9]
     thresholds = [
-        pcarve_threshold(alpha, a, b, epsilon=epsilon)
+        pcarve_threshold(alpha, a=a, b=b, epsilon=epsilon)
         for alpha in alphas
     ]
     assert np.all(np.diff(thresholds) > 0)
+
+
+def test_pcarve_threshold_allows_a_equals_zero():
+    # a=0 (e.g. an "arg min p_1" selection rule) used to be rejected here
+    # even though pcarve_ci/pcarve_estimate already allowed it, and the
+    # underlying _nu_cdf has no trouble with a=0 (it's a plain closed-form
+    # evaluation, not the numerical-integration path that motivated the a=0
+    # fast path elsewhere).
+    alpha, b, epsilon = 0.05, 0.4, 0.5
+    t_star = pcarve_threshold(alpha, a=0.0, b=b, epsilon=epsilon)
+    assert _nu_cdf(t_star, 0.0, b, epsilon) == pytest.approx(alpha, abs=1e-10)
+
+
+def test_pcarve_threshold_allows_b_equals_one():
+    # b=1 means no upper constraint on the selection event (e.g. selecting
+    # on p_1 >= a alone).
+    alpha, a, epsilon = 0.05, 0.1, 0.5
+    t_star = pcarve_threshold(alpha, a=a, b=1.0, epsilon=epsilon)
+    assert _nu_cdf(t_star, a, 1.0, epsilon) == pytest.approx(alpha, abs=1e-10)
+
+
+def test_pcarve_threshold_defaults_a_to_zero():
+    alpha, b, epsilon = 0.05, 0.4, 0.5
+    t_star = pcarve_threshold(alpha, b=b, epsilon=epsilon)
+    t_star_ref = pcarve_threshold(alpha, a=0.0, b=b, epsilon=epsilon)
+    assert t_star == t_star_ref
 
 
 def test_pcarve_threshold_invalid_alpha_raises():
@@ -295,6 +358,26 @@ def test_pcarve_threshold_invalid_alpha_raises():
 def test_pcarve_threshold_invalid_selection_interval_raises():
     with pytest.raises(ValueError):
         pcarve_threshold(0.05, a=0.5, b=0.4)
+
+
+def test_pcarve_threshold_rejects_negative_a():
+    with pytest.raises(ValueError):
+        pcarve_threshold(0.05, a=-0.1, b=0.4)
+
+
+def test_pcarve_threshold_rejects_b_greater_than_one():
+    with pytest.raises(ValueError):
+        pcarve_threshold(0.05, a=0.1, b=1.1)
+
+
+def test_pcarve_threshold_rejects_a_equals_b():
+    with pytest.raises(ValueError):
+        pcarve_threshold(0.05, a=0.3, b=0.3)
+
+
+def test_pcarve_threshold_requires_b_as_keyword():
+    with pytest.raises(TypeError):
+        pcarve_threshold(0.05, 0.1, 0.4)  # noqa: PT011 -- deliberately positional
 
 
 def test_pcarve_threshold_invalid_epsilon_raises():

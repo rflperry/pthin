@@ -1,4 +1,4 @@
-# `pthin`: inference on randomized p-values
+# `pthin`: post-selecton inference with randomized p-values
 
 In settings where hypotheses are selected using p-values (e.g., selecting the sample with the lowest p-value, or any with p-value below $0.05$), using the same data for inference results in tests with inflated type 1 error rates, confidence intervals with below nominal coverage, and estimators that can demonstrate severe bias. This package implements methods to (i) construct randomized p-values, and (ii) provide valid inference on parameters selected using these randomized p-values.
 
